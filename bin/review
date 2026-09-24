@@ -1,0 +1,6 @@
+#!/bin/bash
+# Local review tool. Data lives in ~/Library/Application Support/truckee-cares/.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt; }
+exec .venv/bin/python -m review.cli "$@"

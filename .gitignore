@@ -1,0 +1,12 @@
+node_modules/
+.venv/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.wrangler/
+.DS_Store
+# Review tool data never goes in git. It lives in ~/Library/Application Support/truckee-cares/.
+review/data/
+*.xlsx
+*.key

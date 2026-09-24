@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ s.org }} · {{ s.tagline }}{% endblock %}
+{% block main %}
+<section class="hero">
+  <h1>{{ page.title }}</h1>
+  <p class="lead">{{ page.lead }}</p>
+  <div class="cta-row">
+    <div class="cta">
+      <a class="btn btn-primary btn-big" href="{{ base }}/{{ lang }}/apply/">{{ page.apply_cta }}</a>
+      <p class="muted">{{ page.apply_sub }}</p>
+    </div>
+    <div class="cta">
+      <a class="btn btn-secondary btn-big" href="{{ base }}/{{ lang }}/donate/">{{ page.donate_cta }}</a>
+      <p class="muted">{{ page.donate_sub }}</p>
+    </div>
+  </div>
+</section>
+<section class="steps-grid">
+  <h2>{{ page.how_title }}</h2>
+  <ol>
+    {% for step in page.how %}
+    <li><strong>{{ step.title }}</strong><span>{{ step.text }}</span></li>
+    {% endfor %}
+  </ol>
+</section>
+<section class="card">
+  <h2>{{ page.privacy_title }}</h2>
+  <p>{{ page.privacy_text }}</p>
+</section>
+<section class="stats">
+  <h2>{{ page.stats_title }}</h2>
+  <ul>
+    {% for st in page.stats %}
+    <li><span class="n">{{ st.n }}</span><span>{{ st.label }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endblock %}

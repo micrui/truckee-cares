@@ -1,0 +1,36 @@
+title: {en: Privacy, es: Privacidad}
+sections:
+  - title: {en: What we collect, es: Qué recopilamos}
+    body:
+      en: >
+        Only what we need to help your family: your name, a phone number, where you live, where to
+        mail your card, and your children's first names, ages and sex so we can pick the right toy
+        and coat. We never ask about immigration status, income documents, Social Security numbers,
+        or dates of birth.
+      es: >
+        Solo lo necesario para ayudar a su familia: su nombre, un teléfono, dónde vive, dónde enviar su
+        tarjeta, y los nombres, edades y sexo de sus hijos para escoger el juguete y el abrigo correctos.
+        Nunca preguntamos sobre estatus migratorio, comprobantes de ingresos, número de seguro social ni
+        fechas de nacimiento.
+  - title: {en: How it is protected, es: Cómo se protege}
+    body:
+      en: >
+        Your application is encrypted on your phone before it is sent, using a key that only Truckee
+        Community Cares volunteers hold. The company that stores it for us cannot read it. This site
+        uses no trackers, no analytics, and no advertising.
+      es: >
+        Su solicitud se cifra en su celular antes de enviarse, con una llave que solo tienen los
+        voluntarios de Truckee Community Cares. La empresa que la guarda por nosotros no puede leerla.
+        Este sitio no usa rastreadores, ni analítica, ni publicidad.
+  - title: {en: How long we keep it, es: Cuánto tiempo la guardamos}
+    body:
+      en: >
+        We delete applications after distribution day. We keep a count of families served and nothing
+        that identifies you.
+      es: >
+        Borramos las solicitudes después del día de entrega. Guardamos solo el número de familias
+        atendidas y nada que la identifique.
+  - title: {en: Who to ask, es: A quién preguntar}
+    body:
+      en: Text (530) 479-2050 or email info@truckeecommunitycares.com.
+      es: Mande un texto al (530) 479-2050 o escriba a info@truckeecommunitycares.com.

@@ -1,0 +1,38 @@
+# Site-wide strings. Every leaf is {en:, es:}. Page text lives in <slug>.yaml.
+org:
+  en: Truckee Community Cares
+  es: Truckee Community Cares
+tagline:
+  en: Caring for our neighbors this holiday season
+  es: Cuidando a nuestros vecinos en estas fiestas
+nav:
+  home: {en: Home, es: Inicio}
+  apply: {en: Apply for help, es: Solicitar ayuda}
+  programs: {en: Programs, es: Programas}
+  donate: {en: Donate, es: Donar}
+  volunteer: {en: Volunteer, es: Voluntarios}
+  about: {en: About us, es: Quiénes somos}
+switch_lang:
+  en: Español
+  es: English
+switch_lang_aria:
+  en: Ver este sitio en español
+  es: View this site in English
+help_text:
+  en: Questions? Text us
+  es: ¿Preguntas? Envíenos un texto
+help_email:
+  en: Email us
+  es: Escríbanos
+footer_address:
+  en: P.O. Box 2955, Truckee, CA 96160
+  es: P.O. Box 2955, Truckee, CA 96160
+footer_privacy:
+  en: Privacy
+  es: Privacidad
+footer_note:
+  en: An all-volunteer nonprofit serving Truckee and Soda Springs since 1993.
+  es: Una organización sin fines de lucro, de voluntarios, que sirve a Truckee y Soda Springs desde 1993.
+skip_to_content:
+  en: Skip to content
+  es: Ir al contenido

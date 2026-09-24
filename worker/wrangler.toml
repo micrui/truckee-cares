@@ -1,0 +1,25 @@
+name = "truckee-cares-api"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+# Season config is bundled at deploy time from ../config/season.json.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "truckee-cares"
+database_id = "REPLACE_AFTER_wrangler_d1_create"
+
+# Per-IP rate limit. Nothing is stored by us; Cloudflare counts in memory.
+[[unsafe.bindings]]
+name = "RATE"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 10, period = 60 }
+
+[vars]
+ALLOWED_ORIGINS = "https://micrui.github.io,https://www.truckeecommunitycares.com,https://truckeecommunitycares.com,http://localhost:8788"
+
+# Secrets (set with: npx wrangler secret put ADMIN_TOKEN --config worker/wrangler.toml)
+#   ADMIN_TOKEN        bearer token the review tool uses to list, update and purge
+#   ANTHROPIC_API_KEY  enables /api/help and /api/extract (live help in the form)

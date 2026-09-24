@@ -1,0 +1,6 @@
+#!/bin/bash
+# Build the static site into dist/. Pass --base /truckee-cares for GitHub project pages.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+[ -x .venv/bin/python ] || { python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt; }
+exec .venv/bin/python site/build.py "$@"

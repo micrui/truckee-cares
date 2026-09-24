@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Truckee Community Cares</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="{{ base }}/static/css/site.css">
+<script>
+  // Send the visitor to their language. Spanish speakers get /es/, everyone else /en/.
+  // A stored choice (set by the language switch) wins over the browser setting.
+  (function () {
+    var base = "{{ base }}";
+    var stored = null;
+    try { stored = localStorage.getItem("tcc-lang"); } catch (e) {}
+    var lang = stored || ((navigator.language || "").toLowerCase().indexOf("es") === 0 ? "es" : "en");
+    var path = location.pathname.replace(base, "").replace(/^\/(en|es)\//, "/");
+    if (path === "/" || path === "/index.html") path = "/";
+    location.replace(base + "/" + lang + path);
+  })();
+</script>
+</head>
+<body>
+<main class="wrap">
+  <h1>Truckee Community Cares</h1>
+  <p><a class="btn btn-primary btn-big" href="{{ base }}/en/">English</a>
+     <a class="btn btn-primary btn-big" href="{{ base }}/es/">Español</a></p>
+</main>
+</body>
+</html>

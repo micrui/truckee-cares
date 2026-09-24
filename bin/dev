@@ -1,0 +1,7 @@
+#!/bin/bash
+# Build and serve dist/ on http://localhost:8788 for local testing.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+bin/build "$@"
+echo "serving dist/ at http://localhost:8788/"
+exec .venv/bin/python -m http.server 8788 --directory dist

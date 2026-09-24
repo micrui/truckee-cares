@@ -1,0 +1,15 @@
+# Schools offered in the children step. Edit freely; order is display order.
+schools:
+  - {id: truckee-elementary, en: Truckee Elementary, es: Truckee Elementary}
+  - {id: glenshire-elementary, en: Glenshire Elementary, es: Glenshire Elementary}
+  - {id: donner-trail-elementary, en: Donner Trail Elementary, es: Donner Trail Elementary}
+  - {id: alder-creek-middle, en: Alder Creek Middle School, es: Alder Creek Middle School}
+  - {id: truckee-high, en: Truckee High School, es: Truckee High School}
+  - {id: sierra-high, en: Sierra High School, es: Sierra High School}
+  - {id: sels, en: Sierra Expeditionary Learning School (SELS), es: Sierra Expeditionary Learning School (SELS)}
+  - {id: tea, en: Tahoe Expedition Academy, es: Tahoe Expedition Academy}
+  - {id: prosser-creek-charter, en: Prosser Creek Charter, es: Prosser Creek Charter}
+  - {id: head-start, en: Head Start / preschool, es: Head Start / preescolar}
+  - {id: not-in-school, en: Not in school yet, es: Todavía no va a la escuela}
+  - {id: homeschool, en: Homeschool, es: Educación en casa}
+  - {id: other, en: Other, es: Otra}

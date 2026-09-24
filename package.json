@@ -1,0 +1,21 @@
+{
+  "name": "truckee-cares",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Truckee Community Cares: static site, encrypted application form, admin, and Cloudflare Worker backend",
+  "scripts": {
+    "vendor": "node bin/build-vendor.mjs",
+    "worker:dev": "wrangler dev --config worker/wrangler.toml",
+    "worker:deploy": "wrangler deploy --config worker/wrangler.toml",
+    "test:worker": "node --test worker/test/*.test.mjs"
+  },
+  "devDependencies": {
+    "age-encryption": "^0.2.4",
+    "esbuild": "^0.25.0",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  }
+}

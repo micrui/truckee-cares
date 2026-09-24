@@ -1,0 +1,36 @@
+title: {en: About us, es: Quiénes somos}
+sections:
+  - title: {en: Our mission, es: Nuestra misión}
+    body:
+      en: >
+        Truckee Community Cares, formerly Truckee Community Christmas, is an all-volunteer nonprofit
+        that has helped Truckee families during the holidays for more than 30 years. We welcome all
+        faiths and beliefs. We work with Soroptimist International of Truckee Donner, local churches,
+        the Family Resource Center, Project MANA, schools, and local businesses to find families who
+        need a hand and to raise the funds to help.
+      es: >
+        Truckee Community Cares, antes Truckee Community Christmas, es una organización sin fines de
+        lucro, de voluntarios, que ha ayudado a familias de Truckee durante las fiestas por más de 30
+        años. Recibimos a todas las creencias. Trabajamos con Soroptimist International of Truckee
+        Donner, iglesias locales, el Family Resource Center, Project MANA, escuelas y negocios locales
+        para encontrar familias que necesitan una mano y reunir los fondos para ayudar.
+  - title: {en: Our board, es: Nuestra mesa directiva}
+    body:
+      en: |
+        **President:** Lynette Powell
+
+        **Directors:** Sue Bower, Kathy Echols, Amelia Espinoza, Lynn Richardson, Marisol Rocha,
+        Kristi Morgan, Sally Lyon, Stephanie Blume
+
+        **Founding director:** Joan Hartwell
+      es: |
+        **Presidenta:** Lynette Powell
+
+        **Directoras:** Sue Bower, Kathy Echols, Amelia Espinoza, Lynn Richardson, Marisol Rocha,
+        Kristi Morgan, Sally Lyon, Stephanie Blume
+
+        **Directora fundadora:** Joan Hartwell
+  - title: {en: Partners, es: Aliados}
+    body:
+      en: Soroptimist International of Truckee Donner, Tahoe Forest Church, North Tahoe Truckee Homeless Services, and many local businesses.
+      es: Soroptimist International of Truckee Donner, Tahoe Forest Church, North Tahoe Truckee Homeless Services y muchos negocios locales.

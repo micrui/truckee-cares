@@ -1,0 +1,8 @@
+jinja2
+pyyaml
+markdown
+pytest
+anthropic
+openpyxl
+rapidfuzz
+pyrage

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ s.org }}{% endblock %}</title>
+<meta name="description" content="{{ s.tagline }}">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="{% block robots %}index,follow{% endblock %}">
+<link rel="stylesheet" href="{{ base }}/static/css/site.css">
+<link rel="icon" href="{{ base }}/static/favicon.svg" type="image/svg+xml">
+{% if other_path is defined %}<link rel="alternate" hreflang="{{ other_lang }}" href="{{ other_path }}">{% endif %}
+</head>
+<body>
+<a class="skip" href="#main">{{ s.skip_to_content }}</a>
+{% block header %}
+<header class="site-header">
+  <div class="wrap row">
+    <a class="brand" href="{{ base }}/{{ lang }}/">
+      <img src="{{ base }}/static/favicon.svg" alt="" width="36" height="36">
+      <span>{{ s.org }}</span>
+    </a>
+    {% if other_path is defined %}
+    <a class="lang-switch" href="{{ other_path }}" hreflang="{{ other_lang }}" lang="{{ other_lang }}"
+       aria-label="{{ s.switch_lang_aria }}" data-lang-switch>{{ s.switch_lang }}</a>
+    {% endif %}
+  </div>
+  {% block nav %}
+  <nav class="wrap" aria-label="Main">
+    <a href="{{ base }}/{{ lang }}/" {% if slug == 'index' %}aria-current="page"{% endif %}>{{ s.nav.home }}</a>
+    <a href="{{ base }}/{{ lang }}/apply/" class="nav-apply" {% if slug == 'apply' %}aria-current="page"{% endif %}>{{ s.nav.apply }}</a>
+    <a href="{{ base }}/{{ lang }}/programs/" {% if slug == 'programs' %}aria-current="page"{% endif %}>{{ s.nav.programs }}</a>
+    <a href="{{ base }}/{{ lang }}/donate/" {% if slug == 'donate' %}aria-current="page"{% endif %}>{{ s.nav.donate }}</a>
+    <a href="{{ base }}/{{ lang }}/volunteer/" {% if slug == 'volunteer' %}aria-current="page"{% endif %}>{{ s.nav.volunteer }}</a>
+    <a href="{{ base }}/{{ lang }}/about/" {% if slug == 'about' %}aria-current="page"{% endif %}>{{ s.nav.about }}</a>
+  </nav>
+  {% endblock %}
+</header>
+{% endblock %}
+{% if announcement is defined and announcement %}
+<div class="announcement wrap" role="status">{{ announcement | md | safe }}</div>
+{% endif %}
+<main id="main" class="wrap">
+{% block main %}{% endblock %}
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p class="help-links">
+      <a class="btn btn-help" href="sms:{{ config.help_phone }}">💬 {{ s.help_text }}</a>
+      <a class="btn btn-ghost" href="mailto:{{ config.help_email }}">✉️ {{ s.help_email }}</a>
+    </p>
+    <p>{{ s.org }} · {{ s.footer_address }} · <a href="{{ base }}/{{ lang }}/privacy/">{{ s.footer_privacy }}</a></p>
+    <p class="muted">{{ s.footer_note }}</p>
+  </div>
+</footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>

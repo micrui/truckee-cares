@@ -1,0 +1,30 @@
+{
+  "season": "2026",
+  "timezone": "America/Los_Angeles",
+  "opens": "2026-10-15T00:00:00",
+  "closes": "2026-11-15T23:59:59",
+  "mode": "pickup",
+  "announcement": {
+    "en": "",
+    "es": ""
+  },
+  "help_phone": "+15304792050",
+  "help_email": "info@truckeecommunitycares.com",
+  "service_area": {
+    "cities": [
+      "Truckee",
+      "Soda Springs"
+    ],
+    "zips": [
+      "96160",
+      "96161",
+      "96162",
+      "95728"
+    ]
+  },
+  "api_base": "https://apply-api.truckeecommunitycares.com",
+  "site_url": "https://micrui.github.io/truckee-cares",
+  "recipients": [
+    "age1lw7jfajdj04lwztny7yk9v9c4sj66dsy03gp230djlvju4jzf39qqmxdvj"
+  ]
+}
