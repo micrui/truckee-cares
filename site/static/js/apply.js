@@ -107,7 +107,7 @@ function validate(name) {
     if (state.city === "other") req("city_other");
     if (digits(state.zip).length !== 5) e.zip = t("bad_zip");
     if (!state.mail_same) e.mail_same = t("pick_one");
-    if (state.mail_same === "no") { req("mail_street"); req("mail_city"); if (digits(state.mail_zip).length !== 5) e.mail_zip = t("bad_zip"); }
+    if (state.mail_same === "no") { req("mail_street"); if (state.mail_zip && digits(state.mail_zip).length !== 5) e.mail_zip = t("bad_zip"); }
   }
   if (name === "household") {
     if (!state.adults) e.adults = t("pick_one");
@@ -215,7 +215,7 @@ function renderStep() {
       ${field("zip", t("zip"), { inputmode: "numeric", autocomplete: "postal-code", maxlength: 5 })}
       <p class="why" id="out-of-area" ${state.zip && digits(state.zip).length === 5 && !inArea() ? "" : "hidden"}>${esc(t("out_of_area"))}</p>
       ${choice("mail_same", t("mail_same"), yesno(), { hint: t("mail_why") })}
-      ${state.mail_same === "no" ? field("mail_street", t("mail_street")) + field("mail_city", t("mail_city")) + field("mail_zip", t("mail_zip"), { inputmode: "numeric", maxlength: 5 }) : ""}
+      ${state.mail_same === "no" ? field("mail_street", t("mail_street")) + field("mail_city", t("mail_city"), { optional: true }) + field("mail_zip", t("mail_zip"), { inputmode: "numeric", maxlength: 5, optional: true }) : ""}
       ${nav(false)}</div>`;
   }
   if (name === "household") {
@@ -460,7 +460,7 @@ root.addEventListener("click", async (ev) => {
   if (a === "speak-text") { speakText(assist.history[+el.dataset.i]?.content || ""); return; }
   if (a === "assist-toggle") { readInputs(); assist.open = !assist.open; render(); if (assist.open) root.querySelector("#assist-q")?.focus(); return; }
   if (a === "freeform") { const ta = root.querySelector("#freeform"); freeform.text = ta ? ta.value : ""; await runFreeform(); return; }
-  if (a === "record") { await toggleRecording(); return; }
+  if (a === "record") { rec.prompt = ""; await toggleRecording(); return; }
   if (a === "voice-start") { readInputs(); startVoice(); return; }
   if (a === "voice-replay") { voiceAsk(currentQuestion().key); return; }
   if (a === "voice-begin") { voiceBegin(); return; }
@@ -616,17 +616,17 @@ async function toggleRecording(onText) {
   rec = { state: "opening", recorder: null, chunks: [], stream: null, error: "", onText: onText || null, cancelled: false, prompt };
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-  catch (e) { rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("mic_denied"), prompt }; render(); return; }
+  catch (e) { rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("mic_denied"), prompt: "" }; render(); return; }
   if (rec.state !== "opening") { stream.getTracks().forEach((tr) => tr.stop()); return; }  // cancelled while opening
   const mime = pickMime();
   let recorder;
   try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : { audioBitsPerSecond: 32000 }); }
-  catch (e) { stream.getTracks().forEach((tr) => tr.stop()); rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("mic_denied"), prompt }; render(); return; }
+  catch (e) { stream.getTracks().forEach((tr) => tr.stop()); rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("mic_denied"), prompt: "" }; render(); return; }
   rec = { state: "recording", recorder, chunks: [], stream, error: "", onText: onText || null, cancelled: false, prompt, abort: null };
   recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
   recorder.onstop = async () => {
     stream.getTracks().forEach((tr) => tr.stop());
-    const finish = (error) => { rec = { state: "idle", recorder: null, chunks: [], stream: null, error, prompt }; closeOverlay(); };
+    const finish = (error) => { rec = { state: "idle", recorder: null, chunks: [], stream: null, error, prompt: "" }; closeOverlay(); };
     if (rec.cancelled) { const cb = rec.onText; finish(""); if (cb) { await cb(null); return; } render(); return; }
     showProcessing();
     const blob = new Blob(rec.chunks, { type: recorder.mimeType || "audio/webm" });
@@ -755,7 +755,7 @@ async function submit() {
   }
   if (!previewMode) {
     const g = computeGate();
-    if (!g.open) { gate = g; render(); return; }
+    if (!g.open) { const fromVoice = view === "voice"; gate = g; view = "form"; voice = null; render(); if (fromVoice) voiceSay(t("closed_text")); return; }
   }
   sending = true; sendError = false; sendReason = "";
   const btn = root.querySelector('[data-action="submit"], [data-action="voice-send"]'); if (btn) { btn.disabled = true; btn.textContent = t("sending"); }
@@ -770,7 +770,18 @@ async function submit() {
       let err = ""; try { err = (await res.json()).error || ""; } catch (e) {}
       if (res.status === 403 && (err === "closed" || err === "not_open")) { gate = { open: false, reason: err }; view = "form"; voice = null; render(); return; }
       if (res.status === 400 && err === "wrong_season") { sendReason = "stale"; throw new Error(err); }
-      if (res.status === 429) { sendReason = "busy"; setTimeout(() => { if (sendReason === "busy") { sendError = false; sendReason = ""; submit(); } }, 30000 + Math.random() * 15000); throw new Error(err || "busy"); }
+      if (res.status === 429) {
+        sendReason = "busy";
+        setTimeout(() => {
+          if (sendReason !== "busy") return;
+          // Retry only if the person is still on the send screen and not typing; otherwise leave the manual button.
+          const onSendScreen = view === "voice" ? (voice && voice.phase === "summary") : STEPS[step] === "review";
+          const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+          sendError = false; sendReason = "";
+          if (onSendScreen && !typing) { readInputs(); submit(); } else { sendError = true; render(); }
+        }, 30000 + Math.random() * 15000);
+        throw new Error(err || "busy");
+      }
       throw new Error(`HTTP ${res.status}`);
     }
     const data = await res.json();
@@ -783,11 +794,26 @@ async function submit() {
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
     const fromVoice = view === "voice";
     view = "done"; voice = null;
-    if (fromVoice) setTimeout(speakPage, 300);   // the person cannot read the code: say it
+    if (fromVoice) speakAfter = "done";   // the person cannot read the code: say it, on the unlocked element
   } catch (e) {
     console.error(e); sendError = true;
-    if (view === "voice") voiceSay(sendReason === "busy" ? t("send_busy") : sendReason === "stale" ? t("stale_text") : t("send_error"));
-  } finally { sending = false; render(); }
+    if (view === "voice") speakAfter = sendReason === "busy" ? t("send_busy") : sendReason === "stale" ? t("stale_text") : t("send_error");
+  } finally {
+    sending = false; render();
+    if (speakAfter === "done") speakDoneVoice();
+    else if (speakAfter) voiceSay(speakAfter);
+    speakAfter = "";
+  }
+}
+let speakAfter = "";
+// After a voice-mode send: the done recording, then the confirmation code letter by letter,
+// both through the element the entry tap unlocked (a fresh Audio() may not play on iOS).
+function speakDoneVoice() {
+  const mode = config.mode && config.mode !== "pickup" ? config.mode : "";
+  const name = (mode && audioManifest.files[`${lang}/done@${mode}`]) ? `${lang}/done@${mode}` : `${lang}/done`;
+  const code = [previewMode ? t("preview_spoken") : "", doneId.split("").join(" ")].filter(Boolean).join(". ");
+  if (audioManifest.files[name]) voicePlay(`${base}/static/audio/${name}.mp3`, () => voiceSay(code));
+  else voiceSay(t("done_title") + ". " + code);
 }
 
 
@@ -821,16 +847,19 @@ function classifyShort(text) {
   const words = norm.split(/\s+/).filter(Boolean);
   const hasDigit = /\d/.test(norm);
   const negated = /^(no|non|nope|not)\b/.test(norm) || /\bno (es|esta|is|son)\b/.test(norm);
-  const isNo = words.length > 0 && !hasDigit && words.every((w) => NEG_WORDS.has(w));
+  const TRUE_NEG = ["no", "non", "nope", "not", "nada", "nadie", "ninguno", "ninguna", "ningun", "none", "nothing", "nobody", "dont"];
+  const isNo = words.length > 0 && !hasDigit && words.every((w) => NEG_WORDS.has(w)) && words.some((w) => TRUE_NEG.includes(w));
   const isSame = !negated && !hasDigit && norm.length < 40 && /^(si|yes|yeah|yep|same|la misma|el mismo|igual|ahi mismo|aqui mismo|esa misma)\b/.test(norm);
   return { isNo, isSame, negated };
 }
 function leaveVoice() {
   stopSpeaking(); closeOverlay();
+  const answered = !!(voice && voice.qi >= 0 && (state.first_name || state.phone || state.street || state.children.length));
+  if (voice && voice.helperDefaulted) state.helper = "";
   const miss = nextMissing();
   view = "form"; voice = null;
   step = STEPS.indexOf(miss ? (FIELD_STEP[miss] || "you") : "review");
-  errors = miss ? validate(STEPS[step]) : {};
+  errors = (miss && answered) ? validate(STEPS[step]) : {};
   render();
 }
 
@@ -873,7 +902,7 @@ function startVoice() {
   view = "voice";
   voice = { qi: -1, phase: "intro", transcript: "", readback: "", error: "", missingKey: null, tries: {} };
   // Voice mode does not ask the helper question; a voice applicant answers for their own family.
-  if (!state.helper) state.helper = "no";
+  if (!state.helper) { state.helper = "no"; voice.helperDefaulted = true; }
   if (!state.contact_lang) state.contact_lang = lang;
   render();
   voicePlay(`${base}/static/audio/${lang}/voice_intro.mp3`, () => {});
@@ -897,7 +926,7 @@ async function voiceTalk() {
   rec.prompt = q.text;
   await toggleRecording(async (text) => {
     if (text === null) { voice.phase = "ask"; render(); return; }  // cancelled
-    if (text === false) { voice.error = rec.error || t("voice_trouble"); voice.phase = "ask"; render(); voiceSay(voice.error); return; }
+    if (text === false) { voice.error = rec.error === t("speak_busy") ? t("speak_busy") : t("voice_trouble"); voice.phase = "ask"; render(); voiceSay(voice.error); return; }
     if (!text) { voice.error = t("voice_no_sound"); voice.phase = "ask"; render(); voiceSay(t("voice_no_sound")); return; }
     voice.transcript = text;
     try {
@@ -907,7 +936,7 @@ async function voiceTalk() {
       else if (id === "other" && isNo) { state.other_adult = ""; }
       else if (id === "notes" && isNo) { state.notes = ""; }
       else if (id === "notes") { state.notes = text.trim().slice(0, 500); }
-      else if (id === "children" && isNo) { state.children = []; state.no_children = true; }
+      else if ((id === "children" || id === "m_children") && isNo) { state.children = []; state.no_children = true; }
       else {
         const { fields } = await extractText(text, q.text);
         // A fresh answer replaces what this question owns; other questions' answers stay.
@@ -915,10 +944,13 @@ async function voiceTalk() {
         if (id === "m_children_ages" || id === "m_children_sex") {
           // Only ages: match by first name, else by position.
           const got = (fields && fields.children) || [];
-          got.forEach((c, i) => {
-            const target = state.children.find((k) => c.first_name && k.first_name.toLowerCase() === String(c.first_name).toLowerCase()) || state.children[i];
+          const byName = (c) => state.children.find((k) => c.first_name && k.first_name && k.first_name.toLowerCase() === String(c.first_name).toLowerCase());
+          got.forEach((c) => {
+            const hasAge = c.age !== null && c.age !== undefined && c.age !== "";
+            let target = byName(c);
+            if (!target) target = state.children.find((k) => (id === "m_children_ages" ? k.age === "" : !k.sex));
             if (!target) return;
-            if (c.age !== null && c.age !== undefined && c.age !== "") target.age = String(c.age);
+            if (hasAge && target.age === "") target.age = String(c.age);
             if (!target.first_name && c.first_name) target.first_name = String(c.first_name).trim();
             if (!target.sex && c.sex) target.sex = c.sex;
           });
@@ -928,7 +960,7 @@ async function voiceTalk() {
           if (negated && !fields?.mail_street) { state.mail_same = "no"; }
           else if (!negated && !fields?.mail_street) { state.mail_same = "yes"; }
         }
-        if (id === "children" && !(fields && fields.children && fields.children.length) && negated) { state.children = []; state.no_children = true; }
+        if ((id === "children" || id === "m_children") && !(fields && fields.children && fields.children.length) && negated) { state.children = []; state.no_children = true; }
         if (id === "other" && fields?.other_adult) state.other_adult = fields.other_adult;
       }
       voice.readback = readbackFor(q); voice.phase = "confirm"; saveDraft(); render();
@@ -953,7 +985,7 @@ function readbackFor(q) {
     case "home": case "m_street": case "m_zip": case "m_city": return addr ? t("voice_rb_home", addr) : t("voice_rb_nothing");
     case "mail": case "m_mail_street": return s.mail_same === "no" ? (s.mail_street ? t("voice_rb_mail", [s.mail_street, s.mail_city, s.mail_zip].filter(Boolean).join(", ")) : t("voice_rb_mail_need")) : t("voice_rb_mail_same");
     case "adults": case "m_adults": return s.adults ? t("voice_rb_adults", Number(s.adults), s.adult_coat_sizes) : t("voice_rb_nothing");
-    case "children": case "m_children": case "m_children_ages": case "m_children_sex": return s.no_children ? t("voice_rb_children", []) : t("voice_rb_children", s.children.map(child));
+    case "children": case "m_children": case "m_children_ages": case "m_children_sex": return s.no_children ? t("voice_rb_children", []) : (s.children.length ? t("voice_rb_children", s.children.map(child)) : t("voice_rb_nothing"));
     case "other": return t("voice_rb_other", s.other_adult);
     case "notes": return t("voice_rb_notes", s.notes);
   }
