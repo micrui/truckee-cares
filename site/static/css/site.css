@@ -69,7 +69,8 @@ nav .nav-apply { background: var(--brand); color: #fff; font-weight: 700; }
 .apply-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 @media (max-width: 480px) { .apply-top .brand-text { display: none; } }
 .lang-toggle { display: inline-flex; border: 2px solid var(--brand); border-radius: 999px; overflow: hidden; }
-.lang-toggle button { font: inherit; font-weight: 700; padding: 8px 14px; min-height: 44px; background: transparent; color: var(--brand); border: 0; cursor: pointer; }
+.lang-toggle button { font: inherit; font-weight: 700; padding: 8px 12px; min-height: 44px; background: transparent; color: var(--brand); border: 0; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.lang-toggle { flex-shrink: 1; min-width: 0; max-width: 60%; }
 .lang-toggle button[aria-pressed="true"] { background: var(--brand); color: #fff; }
 .progress { margin: 8px 0 16px; }
 .progress .bar { height: 10px; background: var(--card); border-radius: 999px; overflow: hidden; }
@@ -108,7 +109,7 @@ legend { font-weight: 700; margin-bottom: 6px; padding: 0; }
 .done { text-align: center; padding: 24px 0; }
 .done .code { font-size: 2rem; font-weight: 800; letter-spacing: 2px; background: var(--card); display: inline-block; padding: 12px 20px; border-radius: var(--radius); margin: 12px 0; }
 .help-bar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 8px 0; margin-top: 24px; display: flex; gap: 6px; justify-content: center; }
-.help-bar .btn { min-height: 52px; flex: 1; padding: 5px 2px; font-size: 0.72rem; border-radius: 10px; flex-direction: column; gap: 1px; line-height: 1.1; white-space: nowrap; min-width: 0; overflow: hidden; }
+.help-bar .btn { min-height: 52px; flex: 1; padding: 5px 4px; font-size: 0.8rem; border-radius: 10px; flex-direction: column; gap: 1px; line-height: 1.1; white-space: nowrap; min-width: 0; overflow: hidden; }
 .help-bar .ico { font-size: 1.15rem; line-height: 1.2; }
 @media (min-width: 480px) { .help-bar .btn { font-size: 0.9rem; flex-direction: row; gap: 6px; } }
 .closed { text-align: center; padding: 24px 0; }

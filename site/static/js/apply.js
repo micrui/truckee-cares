@@ -280,7 +280,7 @@ function render() {
     <a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">${hb("🟢", t("whatsapp"))}</a>
     <a class="btn btn-ghost" href="tel:${config.help_phone}">${hb("📞", t("call"))}</a></div>`;
   const top = `<div class="apply-top"><a class="brand" href="${base}/${lang}/" aria-label="Truckee Community Cares"><img src="${base}/static/favicon.svg" alt="" width="36" height="36"><span class="brand-text">Truckee Community Cares</span></a>
-    <div class="lang-toggle" role="group" aria-label="Language"><button type="button" data-action="lang" data-lang="en" aria-pressed="${lang === "en"}">English</button><button type="button" data-action="lang" data-lang="es" aria-pressed="${lang === "es"}">Español</button></div></div>`;
+    <div class="lang-toggle" role="group" aria-label="Language"><button type="button" data-action="lang" data-lang="en" aria-pressed="${lang === "en"}"><span>English</span></button><button type="button" data-action="lang" data-lang="es" aria-pressed="${lang === "es"}"><span>Español</span></button></div></div>`;
   let body;
   if (view === "done") {
     body = `<div class="done"><h1>✅ ${t("done_title")}</h1><p>${t("done_code")}</p><div class="code">${esc(doneId)}</div>
@@ -299,10 +299,31 @@ function render() {
     <form data-action="assist-ask" class="assist-form"><input id="assist-q" type="text" placeholder="${esc(t("assist_placeholder"))}" maxlength="500" autocomplete="off" ${assist.busy ? "disabled" : ""}><button class="btn btn-primary" ${assist.busy ? "disabled" : ""}>${t("assist_send")}</button></form></section>` : "";
   const banner = previewMode ? `<div class="announcement" role="status">${lang === "es" ? "MODO DE PRUEBA. Esta solicitud no cuenta. Las solicitudes reales abren el " : "PREVIEW MODE. This application does not count. Real applications open "}${esc(fmtDate(localToUtc(config.opens, config.timezone)))}.</div>` : "";
   root.innerHTML = top + banner + body + panel + helpBar;
+  fitLabels();
   window.scrollTo(0, 0);
   const firstErr = root.querySelector(".invalid input, .invalid select, [role=alert]");
   if (firstErr && Object.keys(errors).length) firstErr.focus?.();
 }
+
+// Shrink label text so every button in a row fits with a little relief, whatever the
+// language. Runs after each render and on resize. Buttons in one row share a size.
+function fitLabels() {
+  for (const row of root.querySelectorAll(".help-bar, .lang-toggle")) {
+    const labels = [...row.querySelectorAll(".btn > span:not(.ico), button > span:not(.ico)")];
+    if (!labels.length) continue;
+    const relief = 8;
+    let scale = 1;
+    for (const l of labels) {
+      l.style.fontSize = "";
+      const btn = l.closest(".btn, button");
+      const avail = btn.clientWidth - relief - (parseFloat(getComputedStyle(btn).paddingLeft) + parseFloat(getComputedStyle(btn).paddingRight));
+      if (l.scrollWidth > avail && avail > 0) scale = Math.min(scale, avail / l.scrollWidth);
+    }
+    if (scale < 1) for (const l of labels) l.style.fontSize = `${Math.max(0.6, scale) * parseFloat(getComputedStyle(l).fontSize)}px`;
+  }
+}
+let fitTimer;
+window.addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitLabels, 100); });
 
 // ---------- state updates ----------
 function readInputs() {
