@@ -13,6 +13,7 @@ def main(argv=None):
     s = sub.add_parser("import", help="import a JotForm xlsx export from a prior season"); s.add_argument("xlsx"); s.add_argument("--season", required=True); s.add_argument("--status", default="accepted")
     sub.add_parser("pull", help="fetch and decrypt new web applications").add_argument("--season")
     s = sub.add_parser("match", help="run matching for a season"); s.add_argument("--season"); s.add_argument("--no-judge", action="store_true")
+    s.add_argument("--all", action="store_true", help="match every application of the season, not only new ones (e.g. an imported season)")
     sub.add_parser("push", help="push decision statuses to the server")
     sub.add_parser("console", help="open the local admin console").add_argument("--port", type=int, default=8789)
     sub.add_parser("stats", help="counts by season and status")
@@ -30,7 +31,7 @@ def main(argv=None):
         from .match import run_matching
         from .sync import load_config
         season = a.season or load_config()["season"]
-        print(json.dumps(run_matching(con, season, use_judge=not a.no_judge)))
+        print(json.dumps(run_matching(con, season, use_judge=not a.no_judge, include_all=a.all)))
     elif a.cmd == "push":
         from .sync import push_statuses
         print(f"pushed {push_statuses(con)} status changes")

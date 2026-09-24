@@ -44,7 +44,7 @@ def base_payload(first, last, phone, street, city, zip_, kids, adults=2, other_a
             "programs": {"food": True, "toys": bool(kids), "coats": True}, "referral": "", "notes": ""}
 
 
-def from_prior(app, drift=1, nickname=False, second_adult=False, new_baby=False, moved=False):
+def from_prior(app, drift=1, nickname=False, second_adult=False, new_baby=False, moved=False, new_phone=False):
     """A next-season application for a family that applied before."""
     p = app["payload"]; a = p["applicant"]; ad = p["address"]
     first = a["first_name"]; last = a["last_name"]
@@ -54,7 +54,7 @@ def from_prior(app, drift=1, nickname=False, second_adult=False, new_baby=False,
     if new_baby:
         kids.append((random.choice(["Mateo", "Sofía", "Emma", "Santiago"]), 0, random.choice(["boy", "girl"])))
     street = ad["street"] if not moved else f"{random.randint(10000, 12999)} {random.choice(['Alder Dr', 'Donner Pass Rd', 'Glenshire Dr'])}"
-    phone = a["phone"]
+    phone = a["phone"] if not new_phone else "530555" + f"{random.randint(1000, 9999)}"
     other = ""
     if second_adult:
         # The other parent applies for the same children from their own phone.
@@ -72,6 +72,7 @@ def main():
     if len(prior) < 4:
         sys.exit("import a prior season first (bin/review import <xlsx> --season 2025)")
     picks = random.sample(prior, 4)
+    only = sys.argv[1:]  # optional case-number filter, e.g. "9 10"
     cases = [
         ("returning, same details, kids one year older", from_prior(picks[0])),
         ("returning, nickname, moved, new baby", from_prior(picks[1], nickname=True, moved=True, new_baby=True)),
@@ -81,9 +82,13 @@ def main():
         ("out of area (Kings Beach)", base_payload("Elena", "Prueba Norte", "5305551212", "8300 N Lake Blvd", "Kings Beach", "96143", [("Nico", 6, "boy")])),
         ("volunteer files for two families from one phone (1/2)", base_payload("Rosa", "Prueba Uno", "5305550999", "10100 Pine Ave", "Truckee", "96161", [("Diego", 3, "boy")], helper={"name": "Sra. Ayudante", "phone": "5305550999", "org": "TTUSD"})),
         ("volunteer files for two families from one phone (2/2)", base_payload("Carmen", "Prueba Dos", "5305550999", "10200 Oak St", "Truckee", "96161", [("Valeria", 9, "girl"), ("Iker", 12, "boy")], helper={"name": "Sra. Ayudante", "phone": "5305550999", "org": "TTUSD"})),
+        ("gray zone: nickname, moved, new phone; only the children carry over", from_prior(random.choice(prior), nickname=True, moved=True, new_phone=True)),
+        ("gray zone: same last name and zip as a prior family, different children", base_payload("Martín", picks[0]["payload"]["applicant"]["last_name"], "5305553434", "11000 Alder Dr", "Truckee", picks[0]["norm"]["zip"] or "96161", [("Ximena", 4, "girl")])),
     ]
-    for label, payload in cases:
-        print(f"{submit(cfg, payload):16} {label}")
+    for i, (label, payload) in enumerate(cases, 1):
+        if only and str(i) not in only:
+            continue
+        print(f"{submit(cfg, payload):16} {i:>2}. {label}")
 
 
 if __name__ == "__main__":

@@ -107,15 +107,16 @@ def load_apps(con, where="1=1", args=()):
     return out
 
 
-def run_matching(con, season, use_judge=True):
-    """Match every unprocessed application of `season` against everything else."""
+def run_matching(con, season, use_judge=True, include_all=False):
+    """Match every unprocessed application of `season` against everything else.
+    include_all also re-examines applications that already have a status (imports)."""
     all_apps = load_apps(con)
     by_id = {a["id"]: a for a in all_apps}
     index = {}
     for a in all_apps:
         for k in block_keys(a["norm"]):
             index.setdefault(k, set()).add(a["id"])
-    todo = [a for a in all_apps if a["season"] == season and a["status"] == "new"]
+    todo = [a for a in all_apps if a["season"] == season and (include_all or a["status"] == "new")]
     stats = {"apps": len(todo), "pairs": 0, "rule": 0, "llm": 0, "tasks": 0}
     for A in todo:
         cands = set()
