@@ -392,6 +392,7 @@ async function speakText(text) {
 root.addEventListener("click", async (ev) => {
   const el = ev.target.closest("[data-action]"); if (!el) return;
   const a = el.dataset.action;
+  if (a === "assist-ask") return; // the form's submit handler owns this; re-rendering here would drop the question
   if (el.tagName === "A") ev.preventDefault();
   if (a === "speak") { speakPage(); return; }
   if (a === "speak-text") { speakText(assist.history[+el.dataset.i]?.content || ""); return; }
