@@ -45,7 +45,7 @@ def admin_token():
 def api(method, path, body=None, headers=None):
     cfg = load_config()
     req = urllib.request.Request(cfg["api_base"] + path, method=method, data=json.dumps(body).encode() if body else None,
-                                 headers={"authorization": f"Bearer {admin_token()}", "content-type": "application/json", **(headers or {})})
+                                 headers={"authorization": f"Bearer {admin_token()}", "content-type": "application/json", "user-agent": "truckee-cares-review/1", **(headers or {})})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
 
@@ -54,7 +54,7 @@ def pull(db=None, season=None):
     con = db or connect()
     cfg = load_config()
     season = season or cfg["season"]
-    identity = load_identity(season)
+    identity = load_identity(cfg["season"])  # preview rows are encrypted to the current season key
     since = get_meta(con, f"since:{season}", "")
     data = api("GET", f"/api/admin/submissions?season={season}&since={since}")
     n = 0
