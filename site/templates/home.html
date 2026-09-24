@@ -17,7 +17,7 @@
   </div>
 </section>
 <div class="photo-strip" aria-hidden="true">
-  {% for i in [1, 2, 3, 4] %}<img src="{{ base }}/static/img/photos/tcc-{{ i }}.jpg" alt="" loading="lazy">{% endfor %}
+  {% for p in photos %}<img src="{{ base }}/static/img/photos/{{ p.file }}" alt="" loading="lazy"{% if p.width %} width="{{ p.width }}" height="{{ p.height }}"{% endif %}>{% endfor %}
 </div>
 <section class="steps-grid">
   <h2 class="section">{{ page.how_title }}</h2>

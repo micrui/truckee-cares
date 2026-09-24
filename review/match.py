@@ -117,7 +117,7 @@ def run_matching(con, season, use_judge=True, include_all=False):
         for k in block_keys(a["norm"]):
             index.setdefault(k, set()).add(a["id"])
     todo = [a for a in all_apps if a["season"] == season and (include_all or a["status"] == "new")]
-    stats = {"apps": len(todo), "pairs": 0, "rule": 0, "llm": 0, "tasks": 0}
+    stats = {"apps": len(todo), "pairs": 0, "rule": 0, "llm": 0, "tasks": 0, "errors": 0}
     for A in todo:
         cands = set()
         for k in block_keys(A["norm"]):
@@ -133,14 +133,13 @@ def run_matching(con, season, use_judge=True, include_all=False):
                 continue
             stats["pairs"] += 1
             cid = new_id("cand")
-            verdict, by, judged = None, None, None
+            verdict, by, judged = "unsure", "rule", None
             if score >= CERTAIN:
                 verdict, by = "same", "rule"; stats["rule"] += 1
             elif use_judge:
-                judged = judge_pair(A, B, reasons); stats["llm"] += 1
-                verdict, by = judged["verdict"], "llm"
-            else:
-                verdict, by = "unsure", "rule"
+                judged = ask_judge(A, B, reasons, stats)
+                if judged and judged.get("verdict") in ("same", "different", "unsure"):
+                    verdict, by = judged["verdict"], "llm"; stats["llm"] += 1
             con.execute("INSERT INTO candidates(id,app_a,app_b,score,reasons,verdict,decided_by,judge,decided_at) VALUES(?,?,?,?,?,?,?,?,?)",
                         (cid, lo, hi, score, json.dumps(reasons), verdict, by, json.dumps(judged) if judged else None, now()))
             apply_verdict(con, cid, A, B, verdict, reasons, judged, stats)
@@ -152,44 +151,89 @@ def run_matching(con, season, use_judge=True, include_all=False):
                      detail="Address is outside Truckee and Soda Springs. Decline, or accept if it is a known edge case.")
             stats["tasks"] += 1
         if A["payload"].get("notes"):
-            add_task(con, "review_notes", f"Applicant note from {A['payload']['applicant'].get('first_name','')}", app_id=A["id"], detail=A["payload"]["notes"])
+            add_task(con, "review_notes", f"Applicant note from {A['payload']['applicant'].get('first_name','')}", app_id=A["id"], detail=str(A["payload"]["notes"]))
             stats["tasks"] += 1
+        con.commit()  # each application's work lands on its own; a crash later loses nothing done so far
     log(con, "match", season, json.dumps(stats))
     con.commit()
     return stats
 
 
+def ask_judge(A, B, reasons, stats):
+    """The judge's answer, or None when it is off, or a {"reason": "judge error: ..."}
+    record when it failed. Only a real answer counts as an llm decision; the other two
+    leave the pair 'unsure, by rule' so `rejudge` picks it up later."""
+    try:
+        return judge_pair(A, B, reasons)
+    except Exception as e:  # no key, network down, bad answer: the pair waits for a person or a rerun
+        stats["errors"] = stats.get("errors", 0) + 1
+        return {"reason": f"judge error: {type(e).__name__}: {e}"}
+
+
 def apply_verdict(con, cid, A, B, verdict, reasons, judged, stats):
     label = lambda X: f"{X['payload']['applicant'].get('first_name','')} {X['payload']['applicant'].get('last_name','')} ({X['season']})"
+    note = "; ".join(reasons) + (f"\nJudge: {judged.get('reason', '')}" if judged else "")
     if verdict == "same":
         if A["season"] == B["season"]:
-            add_task(con, "resolve_duplicate", f"Duplicate this season: {label(A)} and {label(B)}", app_id=A["id"], candidate_id=cid,
-                     detail="; ".join(reasons) + (f"\nJudge: {judged['reason']}" if judged else ""))
+            add_task(con, "resolve_duplicate", f"Duplicate this season: {label(A)} and {label(B)}", app_id=A["id"], candidate_id=cid, detail=note)
+            stats["tasks"] += 1
+        elif is_preview(A) or is_preview(B):
+            # Preview rows are test data. They exercise the workflow but never join a real family.
+            add_task(con, "review_match", f"Preview match: {label(A)} looks like {label(B)}", app_id=A["id"], candidate_id=cid,
+                     detail=note + "\nPreview applications are never linked to a family; nothing to do unless this is a real request.")
             stats["tasks"] += 1
         else:
             link_family(con, A, B)
     elif verdict == "unsure":
         q = (judged or {}).get("question_for_applicant", "")
         kind = "contact_applicant" if (judged or {}).get("suggested_action") == "contact_applicant" and q else "review_match"
-        add_task(con, kind, f"Same family? {label(A)} vs {label(B)}", app_id=A["id"], candidate_id=cid,
-                 detail="; ".join(reasons) + (f"\nJudge: {judged['reason']}" if judged else "") + (f"\nAsk: {q}" if q else ""))
+        add_task(con, kind, f"Same family? {label(A)} vs {label(B)}", app_id=A["id"], candidate_id=cid, detail=note + (f"\nAsk: {q}" if q else ""))
         stats["tasks"] += 1
 
 
+def is_preview(app):
+    return app.get("season") == "preview"
+
+
 def link_family(con, A, B):
-    """Attach A to B's family (creating it if needed). Continuity: seasons_served and trust come from accepted prior apps."""
-    fid = B["family_id"] or A["family_id"]
+    """Put A and B in one family (creating it if needed). Continuity: seasons_served and
+    trust come from accepted prior apps. The family ids are re-read from the database
+    first, because an earlier pair in the same run may have linked one of them already.
+    If both already belong to different families, the families are merged. Preview rows
+    never link."""
+    if is_preview(A) or is_preview(B):
+        return None
+    for X in (A, B):
+        r = con.execute("SELECT family_id FROM applications WHERE id=?", (X["id"],)).fetchone()
+        X["family_id"] = r["family_id"] if r else None
+    fa, fb = A["family_id"], B["family_id"]
+    if fa and fb and fa != fb:
+        fid = merge_families(con, fa, fb)
+    else:
+        fid = fb or fa
     if not fid:
         fid = new_id("fam")
-        p = B["payload"]["applicant"]
+        p = (B.get("payload") or {}).get("applicant") or {}
         con.execute("INSERT INTO families(id,created_at,display_name,first_season,last_season) VALUES(?,?,?,?,?)",
                     (fid, now(), f"{p.get('last_name','')}, {p.get('first_name','')}".strip(", "), min(A["season"], B["season"]), max(A["season"], B["season"])))
     for X in (A, B):
-        if not X["family_id"]:
+        if X["family_id"] != fid:
             con.execute("UPDATE applications SET family_id=? WHERE id=?", (fid, X["id"]))
             X["family_id"] = fid
     recompute_family(con, fid)
     return fid
+
+
+def merge_families(con, f1, f2):
+    """Move every application of the newer family into the older one and drop the empty row."""
+    rows = {r["id"]: r for r in con.execute("SELECT id, created_at, rowid AS seq FROM families WHERE id IN (?,?)", (f1, f2))}
+    if len(rows) < 2:  # one of them is gone already; keep whichever exists
+        return next(iter(rows), None) or f1
+    older, newer = sorted((f1, f2), key=lambda f: (rows[f]["created_at"], rows[f]["seq"]))
+    con.execute("UPDATE applications SET family_id=? WHERE family_id=?", (older, newer))
+    con.execute("DELETE FROM families WHERE id=?", (newer,))
+    log(con, "merge_family", older, f"absorbed {newer}")
+    return older
 
 
 def recompute_family(con, fid):
@@ -213,10 +257,12 @@ def set_decision(con, app_id, status, note=""):
 def resolve_candidate(con, cid, verdict):
     """A human overrides or confirms a candidate pair."""
     c = con.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone()
-    A = load_apps(con, "id=?", (c["app_a"],))[0]; B = load_apps(con, "id=?", (c["app_b"],))[0]
+    if not c:
+        return
+    A = load_apps(con, "id=?", (c["app_a"],)); B = load_apps(con, "id=?", (c["app_b"],))
     con.execute("UPDATE candidates SET verdict=?, decided_by='human', decided_at=? WHERE id=?", (verdict, now(), cid))
-    if verdict == "same" and A["season"] != B["season"]:
-        link_family(con, A, B)
+    if verdict == "same" and A and B and A[0]["season"] != B[0]["season"]:
+        link_family(con, A[0], B[0])  # no-op for preview rows
     con.commit()
 
 
@@ -227,25 +273,40 @@ def rejudge(con, season, workers=8):
     rows = con.execute("""SELECT c.id FROM candidates c JOIN applications a ON a.id=c.app_a JOIN applications b ON b.id=c.app_b
                           WHERE c.verdict='unsure' AND c.decided_by='rule' AND (a.season=? OR b.season=?)""", (season, season)).fetchall()
     ids = [r["id"] for r in rows]
+    by_id = {}  # one dict per application, shared across its pairs, so links made by one pair are seen by the next
+
+    def app(aid):
+        if aid not in by_id:
+            by_id[aid] = load_apps(con, "id=?", (aid,))[0]
+        return by_id[aid]
+
     pairs = {}
     for cid in ids:
         c = con.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone()
-        A = load_apps(con, "id=?", (c["app_a"],))[0]; B = load_apps(con, "id=?", (c["app_b"],))[0]
-        pairs[cid] = (A, B, json.loads(c["reasons"]))
+        pairs[cid] = (app(c["app_a"]), app(c["app_b"]), json.loads(c["reasons"]))
+
     def work(cid):
         A, B, reasons = pairs[cid]
         try:
-            return cid, judge_pair(A, B, reasons)
-        except Exception as e:  # keep going; the pair stays unsure
-            return cid, {"verdict": "unsure", "confidence": 0, "reason": f"judge error: {e}", "suggested_action": "ask_human", "question_for_applicant": ""}
-    stats = {"pairs": len(ids), "same": 0, "different": 0, "unsure": 0, "tasks": 0}
+            return cid, judge_pair(A, B, reasons), None
+        except Exception as e:  # the pair is left exactly as it was; rerun later
+            return cid, None, e
+
+    stats = {"pairs": len(ids), "same": 0, "different": 0, "unsure": 0, "tasks": 0, "errors": 0, "skipped": 0}
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for cid, judged in ex.map(work, ids):
+        for cid, judged, err in ex.map(work, ids):
+            if err is not None:
+                stats["errors"] += 1
+                continue
+            if not judged or judged.get("verdict") not in ("same", "different", "unsure"):
+                stats["skipped"] += 1  # judge off, or an answer without a verdict
+                continue
             A, B, reasons = pairs[cid]
             con.execute("UPDATE candidates SET verdict=?, decided_by='llm', judge=?, decided_at=? WHERE id=?", (judged["verdict"], json.dumps(judged), now(), cid))
             con.execute("UPDATE tasks SET status='dismissed', resolved_at=?, resolution='superseded by judge' WHERE candidate_id=? AND status='open'", (now(), cid))
-            stats[judged["verdict"]] = stats.get(judged["verdict"], 0) + 1
+            stats[judged["verdict"]] += 1
             apply_verdict(con, cid, A, B, judged["verdict"], reasons, judged, stats)
+            con.commit()
     log(con, "rejudge", season, json.dumps(stats))
     con.commit()
     return stats

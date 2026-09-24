@@ -3,7 +3,8 @@
 Only the fields a volunteer would compare are sent: names, other adult,
 children (first name, age, sex), street address, mailing address, season, and
 the raw children text for imports. No phone numbers, emails, or notes.
-Set TCC_JUDGE=none to skip the model and route every gray-zone pair to a person.
+Set TCC_JUDGE=none to skip the model and route every gray-zone pair to a person:
+judge_pair then returns None, which the matcher records as "unsure, by rule".
 """
 import json
 import os
@@ -59,7 +60,7 @@ def view(app):
 
 def judge_pair(app_a, app_b, reasons):
     if os.environ.get("TCC_JUDGE", "claude") == "none":
-        return {"verdict": "unsure", "confidence": 0, "reason": "judge disabled", "suggested_action": "ask_human", "question_for_applicant": ""}
+        return None
     import anthropic
     client = anthropic.Anthropic(api_key=anthropic_key())
     user = ("Two applications. Rule-based hints: " + "; ".join(reasons) + "\n\nA:\n" + json.dumps(view(app_a), ensure_ascii=False, indent=1)

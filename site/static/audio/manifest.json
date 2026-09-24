@@ -2,9 +2,9 @@
   "model": "gpt-4o-mini-tts",
   "files": {
     "en/welcome": {
-      "hash": "0e819717a5e5964a",
-      "chars": 821,
-      "rendered": "2026-09-24T20:23:36.498Z"
+      "hash": "7ba8a6d2b9da3426",
+      "chars": 1069,
+      "rendered": "2026-09-24T22:03:34.458Z"
     },
     "en/you": {
       "hash": "cc6c7e801c36ba92",
@@ -32,9 +32,9 @@
       "rendered": "2026-09-24T19:30:31.953Z"
     },
     "en/review": {
-      "hash": "5c487def21c1d0a3",
-      "chars": 347,
-      "rendered": "2026-09-24T19:30:35.815Z"
+      "hash": "58f081aac8a32f0c",
+      "chars": 384,
+      "rendered": "2026-09-24T22:03:38.343Z"
     },
     "en/done": {
       "hash": "abac1a0d544ceeaa",
@@ -52,9 +52,9 @@
       "rendered": "2026-09-24T19:30:42.789Z"
     },
     "es/welcome": {
-      "hash": "98a5e79a659001bf",
-      "chars": 870,
-      "rendered": "2026-09-24T20:24:17.715Z"
+      "hash": "487eb25a80bfd65c",
+      "chars": 1109,
+      "rendered": "2026-09-24T22:04:11.210Z"
     },
     "es/you": {
       "hash": "c622c77a381ea02f",
@@ -62,9 +62,9 @@
       "rendered": "2026-09-24T19:30:57.339Z"
     },
     "es/home": {
-      "hash": "d0ef4b71032ae740",
-      "chars": 354,
-      "rendered": "2026-09-24T19:31:01.605Z"
+      "hash": "e845935d61842fa8",
+      "chars": 360,
+      "rendered": "2026-09-24T22:04:15.504Z"
     },
     "es/household": {
       "hash": "a089e16c17335dcd",
@@ -82,14 +82,14 @@
       "rendered": "2026-09-24T19:31:11.386Z"
     },
     "es/review": {
-      "hash": "85e58337764fcae2",
-      "chars": 379,
-      "rendered": "2026-09-24T19:31:16.128Z"
+      "hash": "c044f33598f31113",
+      "chars": 417,
+      "rendered": "2026-09-24T22:04:20.715Z"
     },
     "es/done": {
-      "hash": "a13ce84489c4aed8",
-      "chars": 301,
-      "rendered": "2026-09-24T19:31:19.829Z"
+      "hash": "8fbbe8d1304ae38b",
+      "chars": 303,
+      "rendered": "2026-09-24T22:04:24.791Z"
     },
     "es/not_open": {
       "hash": "3abe82a5bdd08aee",
@@ -102,9 +102,9 @@
       "rendered": "2026-09-24T19:31:22.999Z"
     },
     "en/voice_intro": {
-      "hash": "f0b6ef686b397dc2",
-      "chars": 151,
-      "rendered": "2026-09-24T20:23:38.732Z"
+      "hash": "06c6c30d5a69d29a",
+      "chars": 278,
+      "rendered": "2026-09-24T22:03:41.721Z"
     },
     "en/voice_q_who": {
       "hash": "c843431d363103e7",
@@ -192,9 +192,9 @@
       "rendered": "2026-09-24T20:24:07.860Z"
     },
     "es/voice_intro": {
-      "hash": "03ec8d76f31cfb62",
-      "chars": 155,
-      "rendered": "2026-09-24T20:24:20.162Z"
+      "hash": "964b101f4d0bae7d",
+      "chars": 270,
+      "rendered": "2026-09-24T22:04:29.696Z"
     },
     "es/voice_q_who": {
       "hash": "35099e1858474f9a",
@@ -280,6 +280,76 @@
       "hash": "8fa6cb861c824120",
       "chars": 153,
       "rendered": "2026-09-24T20:24:55.097Z"
+    },
+    "en/voice_m_mail_street": {
+      "hash": "c387fac657783144",
+      "chars": 78,
+      "rendered": "2026-09-24T22:03:44.173Z"
+    },
+    "en/voice_m_children_ages": {
+      "hash": "0a19f52d4082ad5d",
+      "chars": 73,
+      "rendered": "2026-09-24T22:03:46.236Z"
+    },
+    "en/home@mail": {
+      "hash": "b064114f363e668f",
+      "chars": 295,
+      "rendered": "2026-09-24T22:03:49.661Z"
+    },
+    "en/done@mail": {
+      "hash": "bf25157be63f283b",
+      "chars": 245,
+      "rendered": "2026-09-24T22:03:52.589Z"
+    },
+    "en/home@deliver": {
+      "hash": "91ef6de150ef78d2",
+      "chars": 322,
+      "rendered": "2026-09-24T22:03:56.569Z"
+    },
+    "en/done@deliver": {
+      "hash": "75130304b601ff20",
+      "chars": 243,
+      "rendered": "2026-09-24T22:03:59.448Z"
+    },
+    "es/voice_m_mail_street": {
+      "hash": "8e4be5ae3834f760",
+      "chars": 79,
+      "rendered": "2026-09-24T22:04:31.333Z"
+    },
+    "es/voice_m_children_ages": {
+      "hash": "4e6435e119706ee0",
+      "chars": 84,
+      "rendered": "2026-09-24T22:04:32.959Z"
+    },
+    "es/home@mail": {
+      "hash": "560bcbec8e47d447",
+      "chars": 355,
+      "rendered": "2026-09-24T22:04:37.099Z"
+    },
+    "es/done@mail": {
+      "hash": "b0cdd7c4089d02b4",
+      "chars": 295,
+      "rendered": "2026-09-24T22:04:40.052Z"
+    },
+    "es/home@deliver": {
+      "hash": "2b36e55afb471996",
+      "chars": 346,
+      "rendered": "2026-09-24T22:04:44.748Z"
+    },
+    "es/done@deliver": {
+      "hash": "63ff882a82b5efc8",
+      "chars": 289,
+      "rendered": "2026-09-24T22:04:48.254Z"
+    },
+    "en/voice_m_children_sex": {
+      "hash": "58e1bf63f787d0cb",
+      "chars": 91,
+      "rendered": "2026-09-24T22:13:14.719Z"
+    },
+    "es/voice_m_children_sex": {
+      "hash": "0b7e0f4e0f7f703b",
+      "chars": 79,
+      "rendered": "2026-09-24T22:13:16.018Z"
     }
   }
 }

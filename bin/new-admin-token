@@ -1,0 +1,17 @@
+#!/bin/bash
+# Make a fresh admin token for the review tool. The value never appears on screen.
+#   bin/new-admin-token [--force]     -> ~/.config/truckee-cares/admin-token (mode 600)
+# Then push it to the Worker with: bin/push-secret admin-token ADMIN_TOKEN
+set -euo pipefail
+DIR="$HOME/.config/truckee-cares"
+FILE="$DIR/admin-token"
+if [ -e "$FILE" ] && [ "${1:-}" != "--force" ]; then
+  echo "refusing to overwrite $FILE (use --force to replace it)" >&2
+  exit 1
+fi
+umask 077
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+openssl rand -base64 36 | tr -d '/+=' > "$FILE"
+echo "written"
+echo "next: bin/push-secret admin-token ADMIN_TOKEN"

@@ -4,6 +4,7 @@ Column names vary a little between years; we match on keywords. Each row
 becomes an application with source=jotform and status=accepted (we assume
 past seasons were served) unless --status says otherwise.
 """
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -62,7 +63,11 @@ def import_xlsx(path, season, status="accepted", db=None):
         sid = g("id")
         if sid is None and not any(row):
             continue
-        app_id = f"JF-{season}-{sid if sid else abs(hash(tuple(row))) % 10**8}"
+        if sid:
+            app_id = f"JF-{season}-{sid}"
+        else:  # no Submission ID column: a stable digest of the row, the same on every import
+            digest = hashlib.sha1("\x1f".join("" if v is None else str(v) for v in row).encode("utf-8")).hexdigest()
+            app_id = f"JF-{season}-{digest[:12]}"
         if con.execute("SELECT 1 FROM applications WHERE id=?", (app_id,)).fetchone():
             n_dup += 1
             continue

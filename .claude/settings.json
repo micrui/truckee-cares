@@ -1,0 +1,1 @@
+{"permissions":{"deny":["Read(~/.config/truckee-cares/**)","Read(~/Library/Application Support/truckee-cares/**)","Bash(cat ~/.config/truckee-cares/*)","Bash(cat $HOME/.config/truckee-cares/*)","Bash(cat /Users/*/.config/truckee-cares/*)","Bash(sqlite3:*)","Bash(pbpaste:*)"]}}

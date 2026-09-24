@@ -74,6 +74,7 @@ def connect(path=DB_PATH):
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    con.execute("PRAGMA foreign_keys=ON")
     return con
 
 
@@ -98,8 +99,14 @@ def app_row(r):
 
 
 def add_task(con, kind, title, app_id=None, candidate_id=None, detail=""):
-    exists = con.execute("SELECT id FROM tasks WHERE kind=? AND IFNULL(app_id,'')=IFNULL(?,'') AND IFNULL(candidate_id,'')=IFNULL(?,'') AND status='open'",
-                         (kind, app_id, candidate_id)).fetchone()
+    """One open task per (kind, app, candidate). A task that points at nothing
+    (decrypt errors, preview rows that could not be read) is identified by its
+    kind, title and detail instead, so one such task per subject, not one per kind."""
+    if app_id is None and candidate_id is None:
+        exists = con.execute("SELECT id FROM tasks WHERE kind=? AND title=? AND detail=? AND status='open'", (kind, title, detail)).fetchone()
+    else:
+        exists = con.execute("SELECT id FROM tasks WHERE kind=? AND IFNULL(app_id,'')=IFNULL(?,'') AND IFNULL(candidate_id,'')=IFNULL(?,'') AND status='open'",
+                             (kind, app_id, candidate_id)).fetchone()
     if exists:
         return exists["id"]
     tid = new_id("task")

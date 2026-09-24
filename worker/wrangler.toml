@@ -2,25 +2,40 @@ name = "truckee-cares-api"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 workers_dev = true
+# No request logs leave the Worker: nothing about who applied is written anywhere.
+logpush = false
 
 # Season config is bundled at deploy time from ../config/season.json.
+
+[observability]
+enabled = false
 
 [[d1_databases]]
 binding = "DB"
 database_name = "truckee-cares"
 database_id = "c1f6b331-5db4-4917-a50b-4ba1b130e289"
 
-# Per-IP rate limit. Nothing is stored by us; Cloudflare counts in memory.
+# Per-address rate limits (IPv4 address or IPv6 /64). Nothing is stored by us;
+# Cloudflare counts in memory. Applications: 30 a minute, because a school or
+# shelter sends many families through one NAT address in one evening.
 [[unsafe.bindings]]
 name = "RATE"
 type = "ratelimit"
 namespace_id = "1001"
+simple = { limit = 30, period = 60 }
+
+# The paid AI routes (help, extract, transcribe, tts) get a tighter bucket.
+[[unsafe.bindings]]
+name = "RATE_AI"
+type = "ratelimit"
+namespace_id = "1002"
 simple = { limit = 10, period = 60 }
 
 [vars]
 ALLOWED_ORIGINS = "https://micrui.github.io,https://www.truckeecommunitycares.com,https://truckeecommunitycares.com,http://localhost:8788"
 
-# Secrets (set with: npx wrangler secret put ADMIN_TOKEN --config worker/wrangler.toml)
-#   ADMIN_TOKEN        bearer token the review tool uses to list, update and purge
+# Secrets (set with: bin/set-secret <file> then bin/push-secret <file> <NAME>)
+#   ADMIN_TOKEN        bearer token the review tool uses to list, update and purge (bin/new-admin-token)
+#   PREVIEW_TOKEN      x-preview header value: opens the AI routes and the preview season outside the window
 #   ANTHROPIC_API_KEY  enables /api/help and /api/extract (live help in the form)
-#   OPENAI_API_KEY     enables /api/tts (spoken help answers); same key renders the static audio
+#   OPENAI_API_KEY     enables /api/tts and /api/transcribe; same key renders the static audio

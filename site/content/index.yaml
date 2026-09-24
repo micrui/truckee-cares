@@ -32,11 +32,15 @@ how:
 privacy_title: {en: Your information stays private, es: Su información es privada}
 privacy_text:
   en: >
-    Your application is locked with encryption before it leaves your phone. Only our volunteers can
-    open it. We never ask about immigration status, and we delete applications after the season.
+    The application you send is locked with encryption before it leaves your phone. Only our
+    volunteers can open it. If you use the microphone or the help chat, what you say is sent to a
+    speech and language service to fill in the form, and we do not keep it. We never ask about
+    immigration status. The internet copy of your application is deleted after distribution day.
   es: >
-    Su solicitud se cierra con cifrado antes de salir de su celular. Solo nuestros voluntarios pueden
-    abrirla. Nunca preguntamos sobre estatus migratorio y borramos las solicitudes al terminar la temporada.
+    La solicitud que envía se cierra con cifrado antes de salir de su celular. Solo nuestros
+    voluntarios pueden abrirla. Si usa el micrófono o el chat de ayuda, lo que dice se envía a un
+    servicio de voz y lenguaje para llenar el formulario, y no lo guardamos. Nunca preguntamos sobre
+    estatus migratorio. La copia en internet de su solicitud se borra después del día de entrega.
 stats_title: {en: Last season, es: La temporada pasada}
 stats:
   - {n: "285", label: {en: families, es: familias}}

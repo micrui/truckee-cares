@@ -22,7 +22,11 @@ let state = blankState();
 let errors = {};
 let gate = { open: true, reason: null };
 let prefilled = false;
-let previewMode = false;   // ?preview: always open, submissions go to the "preview" season
+let previewMode = false;   // ?preview before opening day: submissions go to the "preview" season
+let previewToken = "";     // ?preview=<token> keeps preview working during the season
+let scrollTop = true;      // render() scrolls to the top only after a navigation, not on a reveal
+let sendReason = "";       // "" | "stale" | "busy" after a failed send
+let voiceGen = 0;          // dropped late TTS responses after the screen changed
 
 function blankState() {
   return {
@@ -34,7 +38,7 @@ function blankState() {
     adults: "", adult_coats: "", adult_coat_sizes: [],
     children: [], no_children: false,
     want_food: true, want_toys: true, want_coats: true, referral: "", notes: "",
-    consent_area: false, consent_one: false, consent_true: false, remember: true,
+    consent_area: false, consent_one: false, consent_true: false, remember: false,
   };
 }
 function blankChild() { return { first_name: "", age: "", sex: "", school: "", school_other: "", coat: "", coat_size: "" }; }
@@ -42,7 +46,13 @@ function blankChild() { return { first_name: "", age: "", sex: "", school: "", s
 // ---------- helpers ----------
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const digits = (s) => String(s || "").replace(/\D/g, "");
-function t(key, ...args) { const v = strings[key]; return typeof v === "function" ? v(...args) : v ?? key; }
+function t(key, ...args) {
+  // Screens that talk about pickup have _mail and _deliver variants for the ICE fallback.
+  const mode = config && config.mode && config.mode !== "pickup" ? config.mode : "";
+  const v = (mode && strings[`${key}_${mode}`] !== undefined) ? strings[`${key}_${mode}`] : strings[key];
+  return typeof v === "function" ? v(...args) : v ?? key;
+}
+const apiHeaders = (extra = {}) => ({ ...(previewToken ? { "x-preview": previewToken } : {}), ...extra });
 function saveDraft() { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ step, state })); } catch (e) {} }
 function loadDraft() { try { const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY)); if (d && d.state) { state = { ...blankState(), ...d.state }; step = d.step || 0; } } catch (e) {} }
 function loadRemembered() { try { return JSON.parse(localStorage.getItem(REMEMBER_KEY)); } catch (e) { return null; } }
@@ -161,13 +171,13 @@ function renderStep() {
   if (name === "welcome") {
     const rem = loadRemembered();
     return `<div class="step"><h1>${t("welcome_title")}</h1>
-      ${rem && !prefilled ? `<div class="card"><h2>${esc(t("welcome_back", rem.state.first_name))}</h2><p>${t("welcome_back_text")}</p>
+      ${rem && !prefilled ? `<div class="card"><h2>${t("welcome_back_neutral")}</h2><p>${t("welcome_back_text")}</p>
         <button class="btn btn-primary btn-big" data-action="prefill">${t("start")}</button>
         <p style="text-align:center;margin-top:8px"><button class="btn btn-ghost" data-action="fresh">${t("welcome_back_fresh")}</button></p></div>` : ""}
       <p>${t("welcome_intro")}</p><p><strong>${t("welcome_time")}</strong></p>
       <h2>${t("welcome_rules_title")}</h2><ul>${t("welcome_rules").map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
       <div class="card"><h2>${t("phone_path_title")}</h2><p>${t("phone_path_text")}</p>
-        <p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help")}</a><a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">🟢 ${t("whatsapp")}</a><a class="btn btn-ghost" href="tel:${config.help_phone}">📞 ${t("call")}</a></p></div>
+        <p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help")}</a><a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" target="_blank" rel="noopener">🟢 ${t("whatsapp")}</a><a class="btn btn-ghost" href="tel:${config.help_phone}">📞 ${t("call")}</a></p></div>
       ${voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
       ${assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
         ${sttEnabled() ? `<button type="button" class="btn btn-big ${rec.state === "recording" ? "btn-secondary recording" : "btn-primary"}" data-action="record" ${rec.state === "transcribing" || freeform.busy ? "disabled" : ""}>
@@ -175,6 +185,7 @@ function renderStep() {
           ${rec.error ? `<p class="error">${esc(rec.error)}</p>` : ""}` : ""}
         <div class="field" style="margin-top:12px"><textarea id="freeform" rows="5" placeholder="${esc(t("freeform_placeholder"))}" ${freeform.busy ? "disabled" : ""}>${esc(freeform.text)}</textarea></div>
         ${freeform.error ? `<p class="error">${t("freeform_error")}</p>` : ""}
+        ${freeform.short ? `<p class="why">${t("freeform_short")}</p>` : ""}
         ${freeform.missing ? `<p class="why">${t("freeform_done")}${freeform.missing.length ? ` <strong>${t("freeform_missing")}</strong> ${esc(freeform.missing.join(", "))}` : ""}</p>` : ""}
         <button type="button" class="btn btn-secondary btn-big" data-action="freeform" ${freeform.busy ? "disabled" : ""}>${freeform.busy ? t("freeform_working") : t("freeform_go")}</button></div>` : ""}
       ${rem && !prefilled ? "" : `<button class="btn btn-primary btn-big" data-action="next">${t("start")}</button>`}</div>`;
@@ -202,7 +213,7 @@ function renderStep() {
       ${choice("city", t("city"), cities)}
       ${state.city === "other" ? field("city_other", t("city_other")) : ""}
       ${field("zip", t("zip"), { inputmode: "numeric", autocomplete: "postal-code", maxlength: 5 })}
-      ${state.zip && digits(state.zip).length === 5 && !inArea() ? `<p class="why">${esc(t("out_of_area"))}</p>` : ""}
+      <p class="why" id="out-of-area" ${state.zip && digits(state.zip).length === 5 && !inArea() ? "" : "hidden"}>${esc(t("out_of_area"))}</p>
       ${choice("mail_same", t("mail_same"), yesno(), { hint: t("mail_why") })}
       ${state.mail_same === "no" ? field("mail_street", t("mail_street")) + field("mail_city", t("mail_city")) + field("mail_zip", t("mail_zip"), { inputmode: "numeric", maxlength: 5 }) : ""}
       ${nav(false)}</div>`;
@@ -248,7 +259,7 @@ function renderStep() {
     const cityName = state.city === "other" ? state.city_other : state.city;
     const addr = `${state.street}${state.unit ? " " + state.unit : ""}, ${cityName} ${state.zip}`;
     const mail = state.mail_same === "yes" ? addr : `${state.mail_street}, ${state.mail_city} ${state.mail_zip}`;
-    const kids = state.children.map((c) => `${c.first_name}, ${c.age}, ${c.sex === "boy" ? t("boy") : t("girl")}${c.coat === "yes" ? ", 🧥" : ""}`).join("<br>") || t("no_children");
+    const kids = state.children.map((c) => `${c.first_name}, ${c.age}, ${c.sex === "boy" ? t("boy") : c.sex === "girl" ? t("girl") : "?"}${c.coat === "yes" ? ", 🧥" : ""}`).join("<br>") || t("no_children");
     const progs = [state.want_food && t("want_food"), state.want_toys && t("want_toys"), state.want_coats && t("want_coats")].filter(Boolean).join(", ");
     const row = (label, val, s) => `<dt>${esc(label)} <a href="#" class="edit" data-action="goto" data-step="${s}">${t("edit")}</a></dt><dd>${val}</dd>`;
     const cbox = (k, l) => `<label class="${errors[k] ? "error" : ""}"><input type="checkbox" name="${k}" ${state[k] ? "checked" : ""}> ${esc(l)}</label>`;
@@ -262,14 +273,14 @@ function renderStep() {
       ${row(t("labels").programs, esc(progs), 5)}</dl>
       <div class="field"><div class="choices stack">${cbox("consent_area", t("consent_area"))}${cbox("consent_one", t("consent_one"))}${cbox("consent_true", t("consent_true"))}</div>
       ${errors.consent_area || errors.consent_one || errors.consent_true ? `<div class="msg" role="alert">${t("required")}</div>` : ""}</div>
-      <div class="field"><div class="choices stack"><label><input type="checkbox" name="remember" ${state.remember ? "checked" : ""}> ${t("remember")}</label></div><div class="hint">${t("remember_hint")}</div></div>
+      ${state.helper === "yes" ? `<p class="hint">${t("remember_helper")}</p>` : `<div class="field"><div class="choices stack"><label><input type="checkbox" name="remember" ${state.remember ? "checked" : ""}> ${t("remember")}</label></div><div class="hint">${t("remember_hint")}</div></div>`}
       <p class="why">🔒 ${t("review_privacy")}</p>
       ${nav(true)}</div>`;
   }
 }
 
 function render() {
-  if (speaking) stopSpeaking();
+  if (speaking || player || (voiceAudio && !voiceAudio.paused)) stopSpeaking();
   const total = STEPS.length - 1; // welcome is step 0, not counted
   const pct = Math.round((step / total) * 100);
   const canSpeak = ("speechSynthesis" in window) || Object.keys(audioManifest.files).length > 0;
@@ -278,7 +289,7 @@ function render() {
     ${canSpeak ? `<button type="button" class="btn btn-ghost" data-action="speak" aria-pressed="${speaking}">${speaking ? hb("⏹", t("stop_reading")) : hb("🔊", t("read_aloud"))}</button>` : ""}
     ${assistEnabled() ? `<button type="button" class="btn btn-help" data-action="assist-toggle" aria-expanded="${assist.open}">${hb("❓", t("assist_title"))}</button>` : ""}
     <a class="btn btn-help" href="sms:${config.help_phone}">${hb("💬", t("help"))}</a>
-    <a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">${hb("🟢", t("whatsapp"))}</a>
+    <a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" target="_blank" rel="noopener">${hb("🟢", t("whatsapp"))}</a>
     <a class="btn btn-ghost" href="tel:${config.help_phone}">${hb("📞", t("call"))}</a></div>`;
   const top = `<div class="apply-top"><a class="brand" href="${base}/${lang}/" aria-label="Truckee Community Cares"><img src="${base}/static/img/logo.png" alt="Truckee Community Cares" height="40"></a>
     <div class="lang-toggle" role="group" aria-label="Language"><button type="button" data-action="lang" data-lang="en" aria-pressed="${lang === "en"}"><span>English</span></button><button type="button" data-action="lang" data-lang="es" aria-pressed="${lang === "es"}"><span>Español</span></button></div></div>`;
@@ -286,26 +297,35 @@ function render() {
   if (view === "voice") {
     body = renderVoice();
   } else if (view === "done") {
-    body = `<div class="done"><h1>✅ ${t("done_title")}</h1><p>${t("done_code")}</p><div class="code">${esc(doneId)}</div>
+    body = `<div class="done"><h1>✅ ${previewMode ? t("preview_done_title") : t("done_title")}</h1><p>${t("done_code")}</p><div class="code">${previewMode ? "TEST · " : ""}${esc(doneId)}</div>
       <p>${t("done_text")}</p><p class="muted">${t("done_limited")}</p>
       <p><button class="btn btn-ghost" data-action="again">${t("done_again")}</button></p></div>`;
   } else if (!gate.open) {
-    body = `<div class="closed"><h1>${gate.reason === "not_open" ? t("not_open_title") : t("closed_title")}</h1>
+    body = gate.reason === "stale"
+      ? `<div class="closed"><h1>${t("stale_title")}</h1><p>${t("stale_text")}</p><button type="button" class="btn btn-primary btn-big" data-action="reload">${t("reload")}</button></div>`
+      : `<div class="closed"><h1>${gate.reason === "not_open" ? t("not_open_title") : t("closed_title")}</h1>
       <p>${gate.reason === "not_open" ? esc(t("not_open_text", fmtDate(localToUtc(config.opens, config.timezone)))) : t("closed_text")}</p></div>`;
   } else {
     body = (step > 0 ? `<div class="progress"><div class="bar"><div style="width:${pct}%"></div></div><div class="label">${t("step_of", step, total)}</div></div>` : "") + renderStep();
-    if (sendError) body += `<div class="card"><p class="error">${t("send_error")}</p><p>${t("send_error_help")}</p><button class="btn btn-primary" data-action="submit">${t("retry")}</button></div>`;
+    if (sendError) body += sendErrorCard();
   }
   const panel = assist.open ? `<section class="card assist" aria-label="${esc(t("assist_heading"))}"><h2>${t("assist_heading")} <button type="button" class="btn btn-ghost small" data-action="assist-toggle" style="float:right">${t("assist_close")}</button></h2>
-    <p class="muted">${t("assist_intro")}</p>
-    <div class="assist-log">${assist.history.map((m, i) => `<p class="${m.role}"><strong>${m.role === "user" ? "🙂" : "🤝"}</strong> ${esc(m.content)}${m.role === "assistant" ? ` <button type="button" class="speak-inline" data-action="speak-text" data-i="${i}" aria-label="${esc(t("read_aloud"))}">🔊</button>` : ""}</p>`).join("")}${assist.busy ? `<p class="muted">${t("assist_thinking")}</p>` : ""}${assist.error ? `<p class="error">${t("assist_error")}</p>` : ""}</div>
+    <p>${t("assist_intro")}</p>
+    <div class="assist-log">${assist.history.map((m, i) => `<p class="${m.role}"><strong>${m.role === "user" ? "🙂" : "💡"}</strong> ${esc(m.content)}${m.role === "assistant" ? ` <button type="button" class="speak-inline" data-action="speak-text" data-i="${i}" aria-label="${esc(t("read_aloud"))}">🔊</button>` : ""}</p>`).join("")}${assist.busy ? `<p class="muted">${t("assist_thinking")}</p>` : ""}${assist.error ? `<p class="error">${t("assist_error")}</p>` : ""}</div>
     <form data-action="assist-ask" class="assist-form"><input id="assist-q" type="text" placeholder="${esc(t("assist_placeholder"))}" maxlength="500" autocomplete="off" ${assist.busy ? "disabled" : ""}><button class="btn btn-primary" ${assist.busy ? "disabled" : ""}>${t("assist_send")}</button></form></section>` : "";
   const banner = previewMode ? `<div class="announcement" role="status">${lang === "es" ? "MODO DE PRUEBA. Esta solicitud no cuenta. Las solicitudes reales abren el " : "PREVIEW MODE. This application does not count. Real applications open "}${esc(fmtDate(localToUtc(config.opens, config.timezone)))}.</div>` : "";
+  const y = window.scrollY;
   root.innerHTML = top + banner + body + panel + helpBar;
   fitLabels();
-  window.scrollTo(0, 0);
+  if (scrollTop) window.scrollTo(0, 0); else window.scrollTo(0, y);
+  scrollTop = true;
   const firstErr = root.querySelector(".invalid input, .invalid select, [role=alert]");
-  if (firstErr && Object.keys(errors).length) firstErr.focus?.();
+  if (firstErr && Object.keys(errors).length) { firstErr.setAttribute("tabindex", "-1"); firstErr.scrollIntoView({ block: "center" }); firstErr.focus?.({ preventScroll: true }); }
+}
+function sendErrorCard() {
+  if (sendReason === "stale") return `<div class="card"><p class="error">${t("stale_text")}</p><button class="btn btn-primary" data-action="reload">${t("reload")}</button></div>`;
+  if (sendReason === "busy") return `<div class="card"><p class="error">${t("send_busy")}</p></div>`;
+  return `<div class="card"><p class="error">${t("send_error")}</p><p>${t("send_error_help")}</p><button class="btn btn-primary" data-action="submit">${t("retry")}</button></div>`;
 }
 
 // Shrink label text so every button in a row fits with a little relief, whatever the
@@ -355,7 +375,7 @@ let assist = { open: false, history: [], busy: false, error: false };
 let audioManifest = { files: {} };   // site/static/audio/manifest.json, pre-rendered screens
 let player = null;                    // the one <audio> element in use
 const ttsEnabled = () => !!(config && config.tts);
-let freeform = { text: "", busy: false, error: false, missing: null, summary: "" };
+let freeform = { text: "", busy: false, error: false, short: false, missing: null, summary: "" };
 let rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };  // idle | recording | transcribing
 let voice = null;          // voice mode state, see startVoice()
 let voiceAudio = null;     // one <audio> element unlocked by the entry tap; reused for every playback
@@ -366,7 +386,9 @@ const assistEnabled = () => !!(config && config.assist);
 // Read the current screen aloud. Pre-rendered audio (a real voice, rendered at build
 // time by bin/build-audio.mjs) when it exists; otherwise the device's own speech engine.
 function stopSpeaking() {
+  voiceGen += 1;
   if (player) { player.pause(); player = null; }
+  if (voiceAudio) { voiceAudio.onended = voiceAudio.onerror = null; voiceAudio.pause(); }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   speaking = false;
   const b = root.querySelector('[data-action="speak"]'); if (b) { b.innerHTML = `<span class="ico" aria-hidden="true">🔊</span><span>${esc(t("read_aloud"))}</span>`; b.setAttribute("aria-pressed", "false"); }
@@ -400,34 +422,33 @@ function currentScreenKey() {
 function speakPage() {
   if (speaking) { stopSpeaking(); return; }
   const key = currentScreenKey();
-  const name = `${lang}/${key}`;
+  const mode = config.mode && config.mode !== "pickup" ? config.mode : "";
+  const name = (mode && audioManifest.files[`${lang}/${key}@${mode}`]) ? `${lang}/${key}@${mode}` : `${lang}/${key}`;
   const stepEl = root.querySelector(".step, .done, .closed");
   const domText = stepEl ? [...stepEl.querySelectorAll("h1, h2, p, li, label, legend, .hint, dt, dd")].map((n) => n.textContent.trim()).filter(Boolean).join(". ") : "";
-  // Only the confirmation code is dynamic: spoken after the recording, letter by letter.
+  // Dynamic pieces: a board notice or the preview warning first, the confirmation code last.
+  const head = [(config.announcement || {})[lang] || "", previewMode ? t("preview_spoken") : ""].filter(Boolean).join(". ");
   const tail = view === "done" ? doneId.split("").join(" ") : "";
-  if (audioManifest.files[name]) playUrl(`${base}/static/audio/${name}.mp3`, tail ? () => speakTail(tail) : null);
-  else synthSpeak(domText);
+  const playMain = () => { if (audioManifest.files[name]) playUrl(`${base}/static/audio/${name}.mp3`, tail ? () => speakTail(tail) : null); else synthSpeak(domText); };
+  if (head) speakTail(head, playMain); else playMain();
 }
 // Dynamic text after a recording: server voice when the API has it, else the device voice.
-async function speakTail(text) {
+async function speakTail(text, onend) {
+  const gen = voiceGen;
   if (ttsEnabled()) {
     try {
-      const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text }) });
-      if (r.ok) { playUrl(URL.createObjectURL(await r.blob())); return; }
+      const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }), body: JSON.stringify({ lang, text }) });
+      if (gen !== voiceGen) return;
+      if (r.ok) { playUrl(URL.createObjectURL(await r.blob()), onend); return; }
     } catch (e) { /* fall through */ }
   }
-  synthSpeak(text);
+  if (gen !== voiceGen) return;
+  synthSpeak(text, onend);
 }
 // Speak a piece of dynamic text (a help answer) with the server voice, else the device voice.
 async function speakText(text) {
   if (speaking) { stopSpeaking(); return; }
-  if (ttsEnabled()) {
-    try {
-      const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text }) });
-      if (r.ok) { playUrl(URL.createObjectURL(await r.blob())); return; }
-    } catch (e) { /* fall through */ }
-  }
-  synthSpeak(text);
+  speakTail(text);
 }
 
 root.addEventListener("click", async (ev) => {
@@ -447,8 +468,9 @@ root.addEventListener("click", async (ev) => {
   if (a === "voice-ok") { voiceNext(); return; }
   if (a === "voice-again") { voiceRepeat(); return; }
   if (a === "voice-skip") { voiceNext(true); return; }
-  if (a === "voice-review") { view = "form"; voice = null; step = STEPS.indexOf("review"); render(); return; }
-  if (a === "voice-send") { state.consent_area = state.consent_one = state.consent_true = true; await submit(); return; }
+  if (a === "voice-review") { leaveVoice(); return; }
+  if (a === "voice-send") { state.consent_area = state.consent_one = state.consent_true = true; state.remember = false; await submit(); return; }
+  if (a === "reload") { location.reload(); return; }
   if (a === "lang") { readInputs(); setLang(el.dataset.lang); return; }
   readInputs();
   if (a === "next") { errors = validate(STEPS[step]); if (Object.keys(errors).length) return render(); step = Math.min(step + 1, STEPS.length - 1); }
@@ -458,9 +480,18 @@ root.addEventListener("click", async (ev) => {
   if (a === "rm-child") { state.children.splice(+el.dataset.i, 1); }
   if (a === "add-size") { state.adult_coat_sizes.push(el.dataset.size); }
   if (a === "rm-size") { state.adult_coat_sizes.splice(+el.dataset.i, 1); }
-  if (a === "prefill") { const rem = loadRemembered(); if (rem) { state = { ...blankState(), ...rem.state, consent_area: false, consent_one: false, consent_true: false }; } prefilled = true; step = 1; }
+  if (a === "prefill") {
+    const rem = loadRemembered();
+    if (rem) {
+      state = { ...blankState(), ...rem.state, consent_area: false, consent_one: false, consent_true: false, remember: true };
+      // Children are a year older per season since the answers were saved.
+      const years = Math.max(0, Math.round((Date.now() - Date.parse(rem.saved || 0)) / (365.25 * 24 * 3600 * 1000)));
+      if (years) state.children = state.children.map((c) => ({ ...c, age: c.age === "" ? "" : String(Number(c.age) + years), coat_size: "" }));
+    }
+    prefilled = true; step = 1;
+  }
   if (a === "fresh") { try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} prefilled = true; step = 1; }
-  if (a === "again") { state = blankState(); step = 0; view = "form"; doneId = ""; prefilled = true; }
+  if (a === "again") { state = blankState(); step = 0; view = "form"; doneId = ""; prefilled = true; try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
   errors = {}; saveDraft(); render();
 });
@@ -471,7 +502,7 @@ root.addEventListener("submit", async (ev) => {
   readInputs();
   assist.history.push({ role: "user", content: q }); assist.busy = true; assist.error = false; render();
   try {
-    const r = await fetch(`${config.api_base}/api/help`, { method: "POST", headers: { "content-type": "application/json" },
+    const r = await fetch(`${config.api_base}/api/help`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ lang, question: q, history: assist.history.slice(0, -1).slice(-8) }) });
     if (!r.ok) throw new Error(r.status);
     const { answer } = await r.json();
@@ -502,7 +533,7 @@ function openOverlay(stream, prompt) {
   document.body.appendChild(el);
   document.body.classList.add("rec-open");
   el.querySelector(".rec-done").addEventListener("click", () => { if (rec.state === "recording") { showProcessing(); rec.recorder.stop(); } });
-  el.querySelector(".rec-cancel").addEventListener("click", () => { if (rec.state === "recording") { rec.cancelled = true; rec.recorder.stop(); } closeOverlay(); });
+  el.querySelector(".rec-cancel").addEventListener("click", cancelRecording);
   overlay = { ...overlay, el, startedAt: performance.now(), quietSince: 0, prompt };
   el.querySelector(".rec-done").focus();
   startMeter(stream, el.querySelector(".rec-meter"));
@@ -520,7 +551,15 @@ function openOverlay(stream, prompt) {
 function showProcessing() {
   if (!overlay.el) return;
   stopMeter();
-  overlay.el.querySelector(".rec-sheet").innerHTML = `<p class="rec-title">${t("rec_processing")}</p><div class="rec-spinner" aria-hidden="true"></div>`;
+  overlay.el.querySelector(".rec-sheet").innerHTML = `<p class="rec-title">${t("rec_processing")}</p><div class="rec-spinner" aria-hidden="true"></div>
+    <button type="button" class="btn btn-ghost rec-cancel">✖ ${t("rec_cancel")}</button>`;
+  overlay.el.querySelector(".rec-cancel").addEventListener("click", cancelRecording);
+}
+// Stop everything about the current recording and tell the caller it was cancelled.
+function cancelRecording() {
+  if (rec.state === "recording") { rec.cancelled = true; rec.recorder.stop(); return; }
+  if (rec.state === "transcribing") { rec.cancelled = true; if (rec.abort) rec.abort.abort(); return; }
+  closeOverlay();
 }
 function closeOverlay() {
   stopMeter();
@@ -532,7 +571,7 @@ function startMeter(stream, canvas) {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC || !canvas) return;
   try {
-    const ctx = new AC(); const src = ctx.createMediaStreamSource(stream); const analyser = ctx.createAnalyser();
+    const ctx = new AC(); if (ctx.state === "suspended") ctx.resume().catch(() => {}); const src = ctx.createMediaStreamSource(stream); const analyser = ctx.createAnalyser();
     analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.6; src.connect(analyser);
     overlay.ctx = ctx; overlay.analyser = analyser;
     const data = new Uint8Array(analyser.fftSize); const g = canvas.getContext("2d");
@@ -571,48 +610,48 @@ function pickMime() {
 }
 async function toggleRecording(onText) {
   if (rec.state === "recording") { showProcessing(); rec.recorder.stop(); return; }
+  if (rec.state !== "idle") return;   // opening or transcribing: ignore a second tap
+  stopSpeaking();
   const prompt = rec.prompt || "";
-  rec.onText = onText || null;
-  rec.error = "";
+  rec = { state: "opening", recorder: null, chunks: [], stream: null, error: "", onText: onText || null, cancelled: false, prompt };
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-  catch (e) { rec.error = t("mic_denied"); render(); return; }
+  catch (e) { rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("mic_denied"), prompt }; render(); return; }
+  if (rec.state !== "opening") { stream.getTracks().forEach((tr) => tr.stop()); return; }  // cancelled while opening
   const mime = pickMime();
-  const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  rec = { state: "recording", recorder, chunks: [], stream, error: "", onText: onText || null, cancelled: false };
+  let recorder;
+  try { recorder = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : { audioBitsPerSecond: 32000 }); }
+  catch (e) { stream.getTracks().forEach((tr) => tr.stop()); rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("mic_denied"), prompt }; render(); return; }
+  rec = { state: "recording", recorder, chunks: [], stream, error: "", onText: onText || null, cancelled: false, prompt, abort: null };
   recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
   recorder.onstop = async () => {
     stream.getTracks().forEach((tr) => tr.stop());
-    if (rec.cancelled) { const cb = rec.onText; rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" }; closeOverlay(); if (cb) { await cb(null); return; } render(); return; }
+    const finish = (error) => { rec = { state: "idle", recorder: null, chunks: [], stream: null, error, prompt }; closeOverlay(); };
+    if (rec.cancelled) { const cb = rec.onText; finish(""); if (cb) { await cb(null); return; } render(); return; }
     showProcessing();
     const blob = new Blob(rec.chunks, { type: recorder.mimeType || "audio/webm" });
-    rec.state = "transcribing"; render();
+    rec.state = "transcribing"; rec.abort = new AbortController(); render();
+    const tid = setTimeout(() => rec.abort && rec.abort.abort(), 30000);
+    let text = false;   // false = server or network trouble, "" = nothing heard
     try {
       const ext = /mp4/.test(blob.type) ? "m4a" : /ogg/.test(blob.type) ? "ogg" : "webm";
       const fd = new FormData(); fd.append("file", blob, `speech.${ext}`); fd.append("lang", lang);
-      const r = await fetch(`${config.api_base}/api/transcribe`, { method: "POST", body: fd });
-      if (!r.ok) throw new Error(r.status);
-      const { text } = await r.json();
-      if (!text) throw new Error("empty");
-      const cb = rec.onText;
-      rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };
-      closeOverlay();
-      if (cb) { await cb(text); return; }
-      const ta = root.querySelector("#freeform");
-      freeform.text = ((ta ? ta.value : freeform.text).trim() + " " + text).trim();
-      await runFreeform();
-      return;
-    } catch (e) {
-      console.error(e);
-      const cb = rec.onText;
-      rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("speak_error") };
-      closeOverlay();
-      if (cb) { await cb(""); return; }
-    }
-    render();
+      const r = await fetch(`${config.api_base}/api/transcribe`, { method: "POST", body: fd, headers: apiHeaders(), signal: rec.abort.signal });
+      if (r.status === 429) text = "busy";
+      else if (r.ok) text = String((await r.json()).text || "");
+    } catch (e) { text = rec.cancelled ? null : false; }
+    finally { clearTimeout(tid); }
+    const cb = rec.onText;
+    if (text === null) { finish(""); if (cb) { await cb(null); return; } render(); return; }
+    if (text === false || text === "busy") { finish(text === "busy" ? t("speak_busy") : t("speak_error")); if (cb) { await cb(false); return; } render(); return; }
+    if (!text) { finish(t("speak_error")); if (cb) { await cb(""); return; } render(); return; }
+    finish("");
+    if (cb) { await cb(text); return; }
+    const ta = root.querySelector("#freeform");
+    freeform.text = ((ta ? ta.value : freeform.text).trim() + " " + text).trim();
+    await runFreeform();
   };
   recorder.start();
-  rec.prompt = prompt;
   openOverlay(stream, prompt);
   render();
   // Safety stop at the limit so a forgotten recording does not run forever.
@@ -640,25 +679,26 @@ function applyExtracted(f, { replaceChildren = true } = {}) {
   if (f.adults) state.adults = String(f.adults);
   if (f.adult_coat_sizes?.length) { state.adult_coat_sizes = f.adult_coat_sizes.map(normalizeSize); state.adult_coats = "yes"; }
   if (f.children?.length) {
-    const kids = f.children.map((c) => ({ ...blankChild(), first_name: c.first_name || "", age: c.age ?? "", sex: c.sex || "", coat: c.coat ? "yes" : "no" }));
+    const kids = f.children
+      .map((c) => ({ ...blankChild(), first_name: (c.first_name || "").trim(), age: (c.age === null || c.age === undefined || c.age === "") ? "" : String(c.age), sex: c.sex || "", coat: c.coat ? "yes" : "no" }))
+      .filter((c) => c.first_name || c.age !== "");
     state.children = replaceChildren ? kids : state.children.concat(kids); state.no_children = false; state.want_toys = true;
   }
   if (f.want_food) state.want_food = true; if (f.want_coats) state.want_coats = true;
 }
 
 async function extractText(text, question) {
-  const r = await fetch(`${config.api_base}/api/extract`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text, question }) });
+  const r = await fetch(`${config.api_base}/api/extract`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }), body: JSON.stringify({ lang, text, question }) });
   if (!r.ok) throw new Error(r.status);
   return r.json();
 }
 
 async function runFreeform() {
-  if (freeform.text.trim().length < 10 || freeform.busy) return;
-  freeform.busy = true; freeform.error = false; freeform.missing = null; render();
+  if (freeform.busy) return;
+  if (freeform.text.trim().length < 10) { freeform.short = true; freeform.error = false; freeform.missing = null; render(); return; }
+  freeform.busy = true; freeform.short = false; freeform.error = false; freeform.missing = null; render();
   try {
-    const r = await fetch(`${config.api_base}/api/extract`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text: freeform.text }) });
-    if (!r.ok) throw new Error(r.status);
-    const { fields: f, missing } = await r.json();
+    const { fields: f, missing } = await extractText(freeform.text);
     if (!f) throw new Error("no fields");
     applyExtracted(f);
     freeform.missing = missing || []; prefilled = true; step = 1; saveDraft();
@@ -667,10 +707,20 @@ async function runFreeform() {
 }
 
 root.addEventListener("change", (ev) => {
-  // Re-render for inputs that reveal or hide other fields.
+  // Re-render for choices that reveal or hide other fields. These fire after the tap
+  // completes, and render() keeps the scroll position, so nothing jumps.
   const n = ev.target.name || "";
-  if (["helper", "city", "mail_same", "adult_coats", "no_children", "zip"].includes(n) || /^child_\d+_(school|coat)$/.test(n)) { readInputs(); render(); }
+  if (n === "helper" && ev.target.value === "yes" && ev.target.checked) state.remember = false;
+  if (["helper", "city", "mail_same", "adult_coats", "no_children"].includes(n) || /^child_\d+_(school|coat)$/.test(n)) { readInputs(); scrollTop = false; render(); }
 });
+root.addEventListener("input", (ev) => {
+  if ((ev.target.name || "") !== "zip") return;
+  const hint = root.querySelector("#out-of-area"); if (!hint) return;
+  const z = digits(ev.target.value);
+  hint.hidden = !(z.length === 5 && !(config.service_area.zips.includes(z) || config.service_area.cities.map((c) => c.toLowerCase()).includes((state.city || "").toLowerCase())));
+});
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && rec.state !== "idle") cancelRecording(); });
+window.addEventListener("pagehide", () => { if (rec.state !== "idle") cancelRecording(); });
 
 function payload() {
   const cityName = state.city === "other" ? state.city_other : state.city;
@@ -689,23 +739,54 @@ function payload() {
   };
 }
 
+// Every path to a send goes through here, so this is the one place that checks the form.
+function firstInvalidStep() {
+  for (const name of STEPS.slice(1, -1)) if (Object.keys(validate(name)).length) return name;
+  return null;
+}
 async function submit() {
-  if (sending) return; sending = true; sendError = false;
-  const btn = root.querySelector('[data-action="submit"]'); if (btn) { btn.disabled = true; btn.textContent = t("sending"); }
+  if (sending) return;
+  const bad = firstInvalidStep();
+  if (bad) {
+    // Something required is missing: land on that step with the field marked.
+    stopSpeaking(); closeOverlay();
+    view = "form"; voice = null; step = STEPS.indexOf(bad); errors = validate(bad); render();
+    return;
+  }
+  if (!previewMode) {
+    const g = computeGate();
+    if (!g.open) { gate = g; render(); return; }
+  }
+  sending = true; sendError = false; sendReason = "";
+  const btn = root.querySelector('[data-action="submit"], [data-action="voice-send"]'); if (btn) { btn.disabled = true; btn.textContent = t("sending"); }
   try {
+    if (!config.recipients || !config.recipients.length) throw new Error("no recipients");
     const enc = new Encrypter();
     for (const r of config.recipients) enc.addRecipient(r);
     const ciphertext = armor.encode(await enc.encrypt(JSON.stringify(payload())));
-    const res = await fetch(`${config.api_base}/api/apply`, { method: "POST", headers: { "content-type": "application/json" },
+    const res = await fetch(`${config.api_base}/api/apply`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext }) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      let err = ""; try { err = (await res.json()).error || ""; } catch (e) {}
+      if (res.status === 403 && (err === "closed" || err === "not_open")) { gate = { open: false, reason: err }; view = "form"; voice = null; render(); return; }
+      if (res.status === 400 && err === "wrong_season") { sendReason = "stale"; throw new Error(err); }
+      if (res.status === 429) { sendReason = "busy"; setTimeout(() => { if (sendReason === "busy") { sendError = false; sendReason = ""; submit(); } }, 30000 + Math.random() * 15000); throw new Error(err || "busy"); }
+      throw new Error(`HTTP ${res.status}`);
+    }
     const data = await res.json();
     doneId = data.id;
-    if (state.remember) { try { const { consent_area, consent_one, consent_true, ...keep } = state; localStorage.setItem(REMEMBER_KEY, JSON.stringify({ saved: new Date().toISOString(), state: keep })); } catch (e) {} }
+    const remember = state.remember && state.helper !== "yes" && view !== "voice";
+    try {
+      if (remember) { const { consent_area, consent_one, consent_true, ...keep } = state; localStorage.setItem(REMEMBER_KEY, JSON.stringify({ saved: new Date().toISOString(), state: keep })); }
+      else localStorage.removeItem(REMEMBER_KEY);
+    } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
+    const fromVoice = view === "voice";
     view = "done"; voice = null;
+    if (fromVoice) setTimeout(speakPage, 300);   // the person cannot read the code: say it
   } catch (e) {
     console.error(e); sendError = true;
+    if (view === "voice") voiceSay(sendReason === "busy" ? t("send_busy") : sendReason === "stale" ? t("stale_text") : t("send_error"));
   } finally { sending = false; render(); }
 }
 
@@ -725,7 +806,33 @@ const VOICE_QS = [
 ];
 const REQUIRED = [["first_name", (s) => s.first_name.trim()], ["last_name", (s) => s.last_name.trim()], ["phone", (s) => digits(s.phone).length === 10],
   ["street", (s) => s.street.trim()], ["city", (s) => s.city && (s.city !== "other" || s.city_other)], ["zip", (s) => digits(s.zip).length === 5],
-  ["adults", (s) => !!s.adults], ["children", (s) => s.children.length || s.no_children]];
+  ["mail_street", (s) => s.mail_same !== "no" || s.mail_street.trim()],
+  ["adults", (s) => !!s.adults], ["children", (s) => s.children.length || s.no_children],
+  ["children_ages", (s) => s.no_children || s.children.every((c) => c.age !== "" && c.first_name.trim())],
+  ["children_sex", (s) => s.no_children || s.children.every((c) => c.sex === "boy" || c.sex === "girl")]];
+// Which form step owns a missing field, for the "check it on screen" landing.
+const FIELD_STEP = { first_name: "you", last_name: "you", phone: "you", street: "home", city: "home", zip: "home", mail_street: "home", adults: "household", children: "children", children_ages: "children", children_sex: "children" };
+
+// Short answers that need no model call. Every word must be a negative word for "no";
+// an affirmative must start with a yes-word and carry no digits and no negation.
+const NEG_WORDS = new Set(["no", "non", "nope", "nada", "nadie", "ninguno", "ninguna", "ningun", "ningunos", "ningunas", "hay", "tengo", "tenemos", "hijos", "ninos", "nino", "nina", "mas", "none", "nothing", "nobody", "dont", "do", "not", "have", "any", "kids", "children", "gracias", "thanks", "thank", "you", "senor", "senora"]);
+function classifyShort(text) {
+  const norm = String(text || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9 ]/g, " ").trim();
+  const words = norm.split(/\s+/).filter(Boolean);
+  const hasDigit = /\d/.test(norm);
+  const negated = /^(no|non|nope|not)\b/.test(norm) || /\bno (es|esta|is|son)\b/.test(norm);
+  const isNo = words.length > 0 && !hasDigit && words.every((w) => NEG_WORDS.has(w));
+  const isSame = !negated && !hasDigit && norm.length < 40 && /^(si|yes|yeah|yep|same|la misma|el mismo|igual|ahi mismo|aqui mismo|esa misma)\b/.test(norm);
+  return { isNo, isSame, negated };
+}
+function leaveVoice() {
+  stopSpeaking(); closeOverlay();
+  const miss = nextMissing();
+  view = "form"; voice = null;
+  step = STEPS.indexOf(miss ? (FIELD_STEP[miss] || "you") : "review");
+  errors = miss ? validate(STEPS[step]) : {};
+  render();
+}
 
 function unlockAudio() {
   if (voiceAudio) return;
@@ -746,22 +853,28 @@ function voicePlay(src, onend) {
   voiceAudio.play().catch(finish);
 }
 async function voiceSay(text, onend) {
+  const gen = voiceGen;
   try {
-    const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text }) });
+    const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }), body: JSON.stringify({ lang, text }) });
+    if (gen !== voiceGen) return;
     if (r.ok) { voicePlay(URL.createObjectURL(await r.blob()), onend); return; }
   } catch (e) { /* fall through */ }
+  if (gen !== voiceGen) return;
   synthSpeak(text, onend);
 }
 function voiceAsk(key) {
   const name = `${lang}/${key}`;
   if (audioManifest.files[name]) voicePlay(`${base}/static/audio/${name}.mp3`);
-  else voiceSay(t(key.replace(/^voice_m_/, "voice_m_").replace(/^voice_q_/, "voice_q_")));
+  else voiceSay(t(key));
 }
 
 function startVoice() {
   unlockAudio();
   view = "voice";
-  voice = { qi: -1, phase: "intro", transcript: "", readback: "", error: "", missingKey: null, rounds: 0 };
+  voice = { qi: -1, phase: "intro", transcript: "", readback: "", error: "", missingKey: null, tries: {} };
+  // Voice mode does not ask the helper question; a voice applicant answers for their own family.
+  if (!state.helper) state.helper = "no";
+  if (!state.contact_lang) state.contact_lang = lang;
   render();
   voicePlay(`${base}/static/audio/${lang}/voice_intro.mp3`, () => {});
 }
@@ -771,44 +884,59 @@ function voiceBegin() {
 }
 
 function currentQuestion() {
-  if (voice.missingKey) return { id: "m_" + voice.missingKey, key: "voice_m_" + voice.missingKey, text: t("voice_m_" + voice.missingKey), missing: voice.missingKey };
+  if (voice.missingKey) return { id: "m_" + voice.missingKey, key: "voice_m_" + voice.missingKey, text: t("voice_m_" + voice.missingKey), missing: voice.missingKey, fields: [] };
   const q = VOICE_QS[voice.qi];
   return { ...q, key: "voice_q_" + q.id, text: t("voice_q_" + q.id) };
 }
 
 async function voiceTalk() {
   const q = currentQuestion();
-  if (rec.state === "recording") { rec.recorder.stop(); voice.phase = "working"; render(); return; }
+  if (rec.state === "recording") { showProcessing(); rec.recorder.stop(); voice.phase = "working"; render(); return; }
+  if (rec.state !== "idle") return;
   voice.error = ""; voice.phase = "recording"; render();
   rec.prompt = q.text;
   await toggleRecording(async (text) => {
     if (text === null) { voice.phase = "ask"; render(); return; }  // cancelled
+    if (text === false) { voice.error = rec.error || t("voice_trouble"); voice.phase = "ask"; render(); voiceSay(voice.error); return; }
     if (!text) { voice.error = t("voice_no_sound"); voice.phase = "ask"; render(); voiceSay(t("voice_no_sound")); return; }
     voice.transcript = text;
     try {
-      // "no" / "same" style answers need no model call.
-      const short = text.trim().toLowerCase();
-      const isNo = /^(no|non|nope|ninguno|ninguna|nada|nadie|no hay)\b/.test(short) && short.length < 25;
-      const isSame = /\b(same|misma|mismo|s[ií]|yes|igual)\b/.test(short) && !/\d/.test(short) && short.length < 40;
-      if (q.id === "mail" && isSame) { state.mail_same = "yes"; }
-      else if (q.id === "other" && isNo) { state.other_adult = ""; }
-      else if (q.id === "notes" && isNo) { state.notes = ""; }
-      else if (q.id === "notes") { state.notes = text.trim().slice(0, 500); }
-      else if (q.id === "children" && isNo) { state.children = []; state.no_children = true; }
+      const { isNo, isSame, negated } = classifyShort(text);
+      const id = q.id;
+      if (id === "mail" && isSame) { state.mail_same = "yes"; state.mail_street = ""; }
+      else if (id === "other" && isNo) { state.other_adult = ""; }
+      else if (id === "notes" && isNo) { state.notes = ""; }
+      else if (id === "notes") { state.notes = text.trim().slice(0, 500); }
+      else if (id === "children" && isNo) { state.children = []; state.no_children = true; }
       else {
         const { fields } = await extractText(text, q.text);
-        if (q.id === "who" || q.id === "home" || q.id === "adults") { for (const k of q.fields) if (k in state && !Array.isArray(state[k])) state[k] = typeof state[k] === "boolean" ? state[k] : ""; }
-        if (fields) applyExtracted(fields, { replaceChildren: true });
-        if (q.id === "mail" && !fields?.mail_street) state.mail_same = state.mail_same || "yes";
-        if (q.id === "other" && fields?.other_adult) state.other_adult = fields.other_adult;
-        if (q.missing) { /* targeted fill already applied */ }
+        // A fresh answer replaces what this question owns; other questions' answers stay.
+        if (id === "who" || id === "home" || id === "adults") { for (const k of q.fields) if (k in state && !Array.isArray(state[k]) && typeof state[k] !== "boolean") state[k] = ""; }
+        if (id === "m_children_ages" || id === "m_children_sex") {
+          // Only ages: match by first name, else by position.
+          const got = (fields && fields.children) || [];
+          got.forEach((c, i) => {
+            const target = state.children.find((k) => c.first_name && k.first_name.toLowerCase() === String(c.first_name).toLowerCase()) || state.children[i];
+            if (!target) return;
+            if (c.age !== null && c.age !== undefined && c.age !== "") target.age = String(c.age);
+            if (!target.first_name && c.first_name) target.first_name = String(c.first_name).trim();
+            if (!target.sex && c.sex) target.sex = c.sex;
+          });
+        } else if (fields) applyExtracted(fields, { replaceChildren: true });
+        if (id === "adults" || id === "m_adults") state.adult_coats = state.adult_coat_sizes.length ? "yes" : "no";
+        if (id === "mail") {
+          if (negated && !fields?.mail_street) { state.mail_same = "no"; }
+          else if (!negated && !fields?.mail_street) { state.mail_same = "yes"; }
+        }
+        if (id === "children" && !(fields && fields.children && fields.children.length) && negated) { state.children = []; state.no_children = true; }
+        if (id === "other" && fields?.other_adult) state.other_adult = fields.other_adult;
       }
       voice.readback = readbackFor(q); voice.phase = "confirm"; saveDraft(); render();
       voiceSay(voice.readback);
-    } catch (e) { console.error(e); voice.error = t("speak_error"); voice.phase = "ask"; render(); }
+    } catch (e) { console.error(e); voice.error = t("voice_trouble"); voice.phase = "ask"; render(); voiceSay(voice.error); }
   });
-  // The microphone may have been refused: fall back to the ask screen with the reason.
-  if (rec.state !== "recording") { voice.phase = "ask"; voice.error = rec.error || ""; }
+  // The microphone may have been refused: say so and offer the screen.
+  if (rec.state !== "recording") { voice.phase = "ask"; if (rec.error) { voice.error = t("voice_mic_off"); voiceSay(voice.error); } }
   render();
 }
 
@@ -816,12 +944,16 @@ function spaced(p) { const d = digits(p); return d ? d.split("").join(" ").repla
 function readbackFor(q) {
   const s = state; const cityName = s.city === "other" ? s.city_other : s.city;
   const addr = [s.street, s.unit, cityName, s.zip].filter(Boolean).join(", ");
+  const child = (c) => {
+    const name = c.first_name || t("voice_rb_noname");
+    return c.age === "" ? t("voice_rb_child_noage", name, c.sex, c.coat === "yes") : t("voice_rb_child", name, Number(c.age), c.sex, c.coat === "yes");
+  };
   switch (q.id) {
     case "who": case "m_first_name": case "m_last_name": case "m_phone": return (s.first_name || s.last_name || s.phone) ? t("voice_rb_who", s.first_name, s.last_name, spaced(s.phone), s.can_text === "yes") : t("voice_rb_nothing");
     case "home": case "m_street": case "m_zip": case "m_city": return addr ? t("voice_rb_home", addr) : t("voice_rb_nothing");
-    case "mail": return s.mail_same === "no" && s.mail_street ? t("voice_rb_mail", [s.mail_street, s.mail_city, s.mail_zip].filter(Boolean).join(", ")) : t("voice_rb_mail_same");
+    case "mail": case "m_mail_street": return s.mail_same === "no" ? (s.mail_street ? t("voice_rb_mail", [s.mail_street, s.mail_city, s.mail_zip].filter(Boolean).join(", ")) : t("voice_rb_mail_need")) : t("voice_rb_mail_same");
     case "adults": case "m_adults": return s.adults ? t("voice_rb_adults", Number(s.adults), s.adult_coat_sizes) : t("voice_rb_nothing");
-    case "children": case "m_children": return t("voice_rb_children", s.children.map((c) => t("voice_rb_child", c.first_name, Number(c.age), c.sex, c.coat === "yes")));
+    case "children": case "m_children": case "m_children_ages": case "m_children_sex": return s.no_children ? t("voice_rb_children", []) : t("voice_rb_children", s.children.map(child));
     case "other": return t("voice_rb_other", s.other_adult);
     case "notes": return t("voice_rb_notes", s.notes);
   }
@@ -836,7 +968,13 @@ function voiceNext(skipped = false) {
   if (voice.missingKey) { voice.missingKey = null; }
   else if (voice.qi < VOICE_QS.length - 1) { voice.qi += 1; voice.phase = "ask"; render(); voiceAsk("voice_q_" + VOICE_QS[voice.qi].id); return; }
   const miss = nextMissing();
-  if (miss && voice.rounds < 3) { voice.rounds += 1; voice.missingKey = miss; voice.phase = "ask"; render(); voiceAsk("voice_m_" + miss); return; }
+  if (miss) {
+    voice.tries[miss] = (voice.tries[miss] || 0) + 1;
+    if (voice.tries[miss] <= 2) { voice.missingKey = miss; voice.phase = "ask"; render(); voiceAsk("voice_m_" + miss); return; }
+    // Asked twice and still missing: hand over to the screen, on the step that owns it.
+    voiceSay(t("voice_type_this"), () => leaveVoice());
+    return;
+  }
   voice.phase = "summary"; voice.qi = VOICE_QS.length; render();
   const summary = [readbackFor({ id: "who" }), readbackFor({ id: "home" }), readbackFor({ id: "mail" }), readbackFor({ id: "adults" }), readbackFor({ id: "children" }), readbackFor({ id: "other" })].join(" ");
   voicePlay(`${base}/static/audio/${lang}/voice_consents.mp3`, () => voiceSay(summary, () => voicePlay(`${base}/static/audio/${lang}/voice_consents_text.mp3`)));
@@ -846,27 +984,29 @@ function voiceRepeat() { stopSpeaking(); voice.phase = "ask"; voice.transcript =
 function renderVoice() {
   const total = VOICE_QS.length;
   const dots = `<div class="step-dots" aria-hidden="true">${VOICE_QS.map((_, i) => `<span class="${i <= voice.qi ? "on" : ""}"></span>`).join("")}</div>`;
-  if (voice.phase === "intro") return `<div class="voice"><p class="q">${t("voice_intro")}</p><button type="button" class="btn btn-primary big" data-action="voice-begin">▶️ ${t("start")}</button></div>`;
+  const screenBtn = `<p class="small-links"><button type="button" class="btn btn-ghost" data-action="voice-review">✏️ ${t("voice_review")}</button></p>`;
+  if (voice.phase === "intro") return `<div class="voice"><p class="q">${t("voice_intro")}</p><button type="button" class="btn btn-primary big" data-action="voice-begin">▶️ ${t("start")}</button>${screenBtn}</div>`;
   if (voice.phase === "summary") {
     return `<div class="voice">${dots}<p class="q">${t("voice_summary_intro")}</p>
       <div class="transcript">${["who", "home", "mail", "adults", "children", "other", "notes"].map((id) => `<p>${esc(readbackFor({ id }))}</p>`).join("")}</div>
       <p class="readback">${t("voice_consents")}</p>
-      <button type="button" class="btn btn-primary big" data-action="voice-send">✅ ${t("voice_send")}</button>
+      <button type="button" class="btn btn-primary big" data-action="voice-send" ${sending ? "disabled" : ""}>✅ ${t("voice_send")}</button>
       <button type="button" class="btn btn-ghost big" data-action="voice-review">✏️ ${t("voice_review")}</button>
-      ${sendError ? `<p class="error">${t("send_error")}</p>` : ""}</div>`;
+      ${sendError ? sendErrorCard() : ""}</div>`;
   }
   const q = currentQuestion();
   let body = `<div class="voice">${dots}<p class="q">${esc(q.text)}</p>
-    <button type="button" class="btn btn-ghost" data-action="voice-replay" style="margin-bottom:8px">🔊</button>`;
+    <button type="button" class="btn btn-ghost" data-action="voice-replay" style="margin-bottom:8px" aria-label="${esc(t("read_aloud"))}">🔊</button>`;
   if (voice.phase === "ask" || voice.phase === "recording") {
     body += `<button type="button" class="btn big ${voice.phase === "recording" ? "rec" : "btn-primary"}" data-action="voice-talk">${voice.phase === "recording" ? "⏺ " + t("voice_tap_done") : "🎤 " + t("voice_tap_talk")}</button>`;
     if (voice.error) body += `<p class="error">${esc(voice.error)}</p>`;
     if (q.optional) body += `<p class="small-links"><button type="button" class="btn btn-ghost" data-action="voice-skip">${t("voice_skip")}</button></p>`;
+    body += screenBtn;
   } else if (voice.phase === "working") {
     body += `<p class="readback">${t("voice_working")}</p>`;
   } else if (voice.phase === "confirm") {
     body += `<div class="transcript"><strong>${t("voice_heard")}</strong> ${esc(voice.transcript)}</div><p class="readback">${esc(voice.readback)}</p>
-      <div class="row2"><button type="button" class="btn btn-primary" data-action="voice-ok">✅ ${t("voice_correct")}</button><button type="button" class="btn btn-ghost" data-action="voice-again">🔁 ${t("voice_again")}</button></div>`;
+      <div class="row2"><button type="button" class="btn btn-primary" data-action="voice-ok">✅ ${t("voice_correct")}</button><button type="button" class="btn btn-ghost" data-action="voice-again">🔁 ${t("voice_again")}</button></div>${screenBtn}`;
   }
   return body + "</div>";
 }
@@ -875,19 +1015,36 @@ function renderVoice() {
 window.__tcc = { get rec() { return { state: rec.state, error: rec.error }; }, get voice() { return voice; }, get view() { return view; }, get state() { return state; } };
 
 // ---------- boot ----------
+function renderFallback(msg) {
+  const phone = (config && config.help_phone) || "+15304792050";
+  root.innerHTML = `<div class="closed"><p class="error">${esc(msg)}</p>
+    <p class="help-links"><a class="btn btn-help" href="sms:${phone}">💬 ${phone}</a><a class="btn btn-ghost" href="tel:${phone}">📞</a></p>
+    <p><button type="button" class="btn btn-primary" data-action="reload">Reload / Recargar</button></p></div>`;
+}
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
 (async function boot() {
   try { const stored = localStorage.getItem(LANG_KEY); if (stored && stored !== lang && STRINGS[stored]) { lang = stored; strings = STRINGS[lang]; document.documentElement.lang = lang; } } catch (e) {}
-  config = await (await fetch(`${base}/config.json`, { cache: "no-store" })).json();
-  try { const m = await fetch(`${base}/static/audio/manifest.json`, { cache: "no-store" }); if (m.ok) audioManifest = await m.json(); } catch (e) {}
+  try { config = await withTimeout(fetch(`${base}/config.json`, { cache: "no-store" }).then((r) => r.json()), 15000); }
+  catch (e) { renderFallback("We could not load the form. Check your connection, or text us. / No pudimos cargar el formulario. Revise su conexión o mándenos un texto."); return; }
+  try { const m = await withTimeout(fetch(`${base}/static/audio/manifest.json`, { cache: "no-store" }), 8000); if (m.ok) audioManifest = await m.json(); } catch (e) {}
   gate = computeGate();
-  const preview = new URLSearchParams(location.search).has("preview");
-  previewMode = preview;
-  try { const r = await fetch(`${config.api_base}/api/status`, { cache: "no-store" }); if (r.ok) { const s = await r.json(); config.assist = !!s.assist; config.tts = !!s.tts; config.stt = !!s.stt; if (typeof s.open === "boolean" && !preview) gate = s.open ? { open: true } : { open: false, reason: s.reason || gate.reason || "closed" }; } } catch (e) {}
-  if (preview) gate = { open: true, reason: null };
+  const params = new URLSearchParams(location.search);
+  const previewParam = params.has("preview");
+  previewToken = previewParam ? (params.get("preview") || "") : "";
+  let serverOpen = null;
+  try {
+    const r = await withTimeout(fetch(`${config.api_base}/api/status`, { cache: "no-store", headers: apiHeaders() }), 10000);
+    if (r.ok) {
+      const st = await r.json();
+      config.assist = !!st.assist; config.tts = !!st.tts; config.stt = !!st.stt;
+      if (typeof st.open === "boolean") { serverOpen = st.open; gate = st.open ? { open: true, reason: null } : { open: false, reason: st.reason || gate.reason || "closed" }; }
+      if (st.season && st.season !== config.season) gate = { open: false, reason: "stale" };
+    }
+  } catch (e) { /* the client-side gate stands */ }
+  // Preview: before opening day a bare ?preview works. Once the season is open, a shared
+  // link must not send real families into the test inbox, so preview then needs the token.
+  previewMode = previewParam && (serverOpen !== true || !!previewToken);
+  if (previewMode && gate.reason !== "stale") gate = { open: true, reason: null };
   loadDraft();
-  if (location.hash.startsWith("#invite=")) {
-    // Reserved: invitation links carry prior answers encrypted with a key in the fragment.
-    // The fragment never reaches the server. Decoding lands here once the review tool issues links.
-  }
   render();
 })();

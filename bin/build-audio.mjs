@@ -29,8 +29,10 @@ export const INSTRUCTIONS = {
 
 // What is read aloud on each screen. Keys refer to apply-strings.js. Keep this the
 // spoken script, not the exact on-screen text: labels read better with a little glue.
-export function narration(lang) {
-  const s = STRINGS[lang];
+export function narration(lang, mode = "pickup") {
+  // Screens that mention pickup have _mail and _deliver variants for the ICE fallback.
+  const raw = STRINGS[lang];
+  const s = new Proxy(raw, { get: (o, k) => (mode !== "pickup" && o[`${k}_${mode}`] !== undefined) ? o[`${k}_${mode}`] : o[k] });
   const opt = ` ${s.optional}`;
   return {
     welcome: [s.welcome_title, s.welcome_intro, s.welcome_time, s.welcome_rules_title, ...s.welcome_rules, s.phone_path_title, s.phone_path_text, s.freeform_title, s.freeform_text],
@@ -49,6 +51,8 @@ export function narration(lang) {
     voice_m_phone: [s.voice_missing_intro, s.voice_m_phone], voice_m_street: [s.voice_missing_intro, s.voice_m_street],
     voice_m_zip: [s.voice_missing_intro, s.voice_m_zip], voice_m_city: [s.voice_missing_intro, s.voice_m_city],
     voice_m_adults: [s.voice_missing_intro, s.voice_m_adults], voice_m_children: [s.voice_missing_intro, s.voice_m_children],
+    voice_m_mail_street: [s.voice_missing_intro, s.voice_m_mail_street], voice_m_children_ages: [s.voice_missing_intro, s.voice_m_children_ages],
+    voice_m_children_sex: [s.voice_missing_intro, s.voice_m_children_sex],
     voice_consents: [s.voice_summary_intro],
     voice_consents_text: [s.voice_consents],
     closed: [s.closed_title, s.closed_text],
@@ -84,9 +88,12 @@ async function main() {
   const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : { model: MODEL, files: {} };
   const key = loadKey();
   let rendered = 0, chars = 0;
+  const MODE_STEPS = ["home", "done"];   // the screens whose text changes with season.mode
   for (const lang of ["en", "es"]) {
     mkdirSync(new URL(`${lang}/`, root), { recursive: true });
-    for (const [step, lines] of Object.entries(narration(lang))) {
+    const jobs = Object.entries(narration(lang)).map(([step, lines]) => [step, lines]);
+    for (const mode of ["mail", "deliver"]) for (const [step, lines] of Object.entries(narration(lang, mode))) if (MODE_STEPS.includes(step)) jobs.push([`${step}@${mode}`, lines]);
+    for (const [step, lines] of jobs) {
       const text = lines.filter(Boolean).join(".\n").replace(/\.\.\n/g, ".\n");
       const hash = createHash("sha256").update(`${MODEL}|${VOICES[lang]}|${INSTRUCTIONS[lang]}|${text}`).digest("hex").slice(0, 16);
       const name = `${lang}/${step}`;

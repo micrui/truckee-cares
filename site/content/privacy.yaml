@@ -15,21 +15,39 @@ sections:
   - title: {en: How it is protected, es: Cómo se protege}
     body:
       en: >
-        Your application is encrypted on your phone before it is sent, using a key that only Truckee
-        Community Cares volunteers hold. The company that stores it for us cannot read it. This site
-        uses no trackers, no analytics, and no advertising.
+        The application you send is encrypted on your phone before it leaves, using a key that only
+        Truckee Community Cares volunteers hold. The company that stores it for us holds only the
+        locked copy and cannot read it. This site uses no trackers, no analytics, and no advertising.
       es: >
-        Su solicitud se cifra en su celular antes de enviarse, con una llave que solo tienen los
-        voluntarios de Truckee Community Cares. La empresa que la guarda por nosotros no puede leerla.
-        Este sitio no usa rastreadores, ni analítica, ni publicidad.
+        La solicitud que envía se cifra en su celular antes de salir, con una llave que solo tienen
+        los voluntarios de Truckee Community Cares. La empresa que la guarda por nosotros solo tiene
+        la copia cerrada y no puede leerla. Este sitio no usa rastreadores, ni analítica, ni publicidad.
+  - title: {en: If you use the microphone or the help chat, es: Si usa el micrófono o el chat de ayuda}
+    body:
+      en: >
+        The form has a microphone, a help chat, and a box where you can tell us in your own words.
+        They are optional. If you use them, what you say or type is sent to a speech-to-text service
+        and a language service (OpenAI and Anthropic) so it can fill in the form or answer your
+        question. Truckee Community Cares does not store what you say or type there. The finished
+        application is still encrypted on your phone before it is sent. If you would rather not use
+        these, type into the form fields directly.
+      es: >
+        El formulario tiene un micrófono, un chat de ayuda y un cuadro donde puede contarnos con sus
+        propias palabras. Son opcionales. Si los usa, lo que dice o escribe se envía a un servicio de
+        voz a texto y a un servicio de lenguaje (OpenAI y Anthropic) para llenar el formulario o
+        responder su pregunta. Truckee Community Cares no guarda lo que dice o escribe ahí. La
+        solicitud terminada se cifra en su celular antes de enviarse, igual que siempre. Si prefiere
+        no usarlos, escriba directamente en los campos del formulario.
   - title: {en: How long we keep it, es: Cuánto tiempo la guardamos}
     body:
       en: >
-        We delete applications after distribution day. We keep a count of families served and nothing
-        that identifies you.
+        The copy on the internet is deleted after distribution day. One volunteer's computer keeps
+        your application until the next season's applications have been matched, so we can recognize
+        families who come back. Then it is deleted.
       es: >
-        Borramos las solicitudes después del día de entrega. Guardamos solo el número de familias
-        atendidas y nada que la identifique.
+        La copia en internet se borra después del día de entrega. La computadora de un voluntario
+        guarda su solicitud hasta que se revisen las solicitudes de la siguiente temporada, para
+        reconocer a las familias que regresan. Después se borra.
   - title: {en: Who to ask, es: A quién preguntar}
     body:
       en: Text (530) 479-2050 or email info@truckeecommunitycares.com.

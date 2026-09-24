@@ -9,22 +9,42 @@ import Anthropic from "@anthropic-ai/sdk";
 
 export const MODEL = "claude-opus-5";
 const MAX_TEXT = 4000;
+const MAX_HISTORY_TURNS = 8;
+const MAX_HISTORY_CHARS = 6000;
 
-function programFacts(season) {
+function announcement(season, lang) {
+  const a = season.announcement || {};
+  return String(a[lang] || a.en || a.es || "").trim();
+}
+
+export function programFacts(season, lang = "en") {
+  const mode = season.mode;
+  const after = mode === "mail"
+    ? "if accepted, the family gets a text in early December, and the card and gifts arrive by mail. There is no pickup."
+    : mode === "deliver"
+      ? "if accepted, the family gets a text in early December, and a volunteer brings the card and gifts to the home. There is no pickup."
+      : "if accepted, the family gets a text and a card by mail in early December. Bring the card on pickup day.";
+  const plan = mode === "mail" ? "cards and gifts mailed to families" : mode === "deliver" ? "delivery to families by volunteers" : "in-person pickup in mid-December";
+  const proof = mode === "pickup" ? "Proof of address may be asked for on pickup day." : "Proof of address may be asked for.";
+  const notice = announcement(season, lang);
   return `Program facts for the ${season.season} season:
 - Truckee Community Cares (TCC) is an all-volunteer nonprofit in Truckee, California. It gives families a grocery gift card, one new toy per child (ages 0-18), and warm coats for family members who need one, in mid-December.
-- Who can apply: families living in ${season.service_area.cities.join(" or ")}. Proof of address may be asked for on pickup day. One application per family per year.
+- Who can apply: families living in ${season.service_area.cities.join(" or ")}. ${proof} One application per family per year.
 - Applications open ${season.opens.slice(0, 10)} and close ${season.closes.slice(0, 10)}. Late applications are not accepted.
-- After applying: if accepted, the family gets a text and a card by mail in early December. Bring the card on pickup day. Funds are limited, so not every family can be helped. Current plan: ${season.mode === "pickup" ? "in-person pickup in mid-December" : season.mode === "mail" ? "cards mailed to families" : "delivery to families"}.
+- After applying: ${after} Funds are limited, so not every family can be helped. Current plan: ${plan}.
 - Seniors: low-income and home-bound seniors get grocery cards through Sierra Senior Services; they do not fill out this form.
 - TCC never asks about immigration status, income documents, Social Security numbers, or dates of birth. Answers are encrypted on the phone before sending. Applications are deleted after the season.
-- Help from a person: text or call ${season.help_phone}, or email ${season.help_email}. WhatsApp works on the same number.`;
+- Help from a person: text or call ${season.help_phone}, or email ${season.help_email}. WhatsApp works on the same number.${notice ? `\n- Current notice from the board: ${notice}` : ""}`;
 }
 
 export function helpSystem(season, lang) {
+  const notice = announcement(season, lang);
+  const pickupDay = season.mode === "pickup" ? "pickup day" : "anything about the program";
   return `You are the help assistant inside the Truckee Community Cares holiday-assistance application form. You talk to families, many of them Spanish-speaking immigrants, some helped by a volunteer. Be warm, plain, and brief: two or three short sentences, no lists unless asked. Never ask about immigration status. Never promise that a family will be accepted. If you do not know something, say so and point to the phone number. If the person seems to need a human, or asks for one, give the phone number right away. Answer in ${lang === "es" ? "Mexican Spanish, using usted" : "plain English"} unless they write in the other language.
 
-${programFacts(season)}
+You are an automated assistant, not a volunteer; if asked whether you are a person say you are a computer program. You cannot see any application, confirmation code, or decision; if asked about status say the family will hear by text in early December and give the phone number. Do not ask for a name, phone number, address, or other personal details. Do not promise that ${pickupDay} is safe from immigration enforcement or give legal advice; state the current plan and give the phone number.${notice ? " When asked about pickup, dates, or coming in person, repeat the current notice from the board word for word." : ""}
+
+${programFacts(season, lang)}
 
 The form has these steps: 1 about you (name, phone, whether we may text, another adult in the home), 2 where you live (street address, mailing address), 3 adults in the home and adult coat sizes, 4 children (first name, age, boy or girl, school, coat), 5 what would help (grocery card, toys, coats), 6 review and send. A confirmation code is shown at the end; they should screenshot it.`;
 }
@@ -39,7 +59,7 @@ export const EXTRACT_SCHEMA = {
         other_adult: { type: "string" }, street: { type: "string" }, unit: { type: "string" }, city: { type: "string" }, zip: { type: "string" },
         mail_street: { type: "string" }, adults: { type: "integer" },
         adult_coat_sizes: { type: "array", items: { type: "string" } },
-        children: { type: "array", items: { type: "object", properties: { first_name: { type: "string" }, age: { type: "integer" }, sex: { type: "string", enum: ["boy", "girl", ""] }, coat: { type: "boolean" } }, required: ["first_name", "age", "sex", "coat"], additionalProperties: false } },
+        children: { type: "array", items: { type: "object", properties: { first_name: { type: "string" }, age: { anyOf: [{ type: "integer" }, { type: "null" }] }, sex: { type: "string", enum: ["boy", "girl", ""] }, coat: { type: "boolean" } }, required: ["first_name", "age", "sex", "coat"], additionalProperties: false } },
         want_food: { type: "boolean" }, want_toys: { type: "boolean" }, want_coats: { type: "boolean" },
       },
       required: ["first_name", "last_name", "phone", "can_text", "other_adult", "street", "unit", "city", "zip", "mail_street", "adults", "adult_coat_sizes", "children", "want_food", "want_toys", "want_coats"],
@@ -53,7 +73,24 @@ export const EXTRACT_SCHEMA = {
 };
 
 export function extractSystem(lang) {
-  return `You turn what a person says about their family into fields for a holiday-assistance form. Copy only what they said; use "" or 0 or [] for anything not stated, never guess. Phone as 10 digits (people often say the digits in groups, or in Spanish). can_text is true if they agreed to texts, or said nothing about it; false only if they declined. City is Truckee, Soda Springs, or what they said. Children: first name, age in years (0 for a baby), boy or girl if stated, coat true only if they said the child needs a coat. adults is the number of adults in the home if stated, else 0. want_food, want_toys, want_coats are true only if they asked for that. When a question is given, fill only what that answer says; leave everything else empty. A plain "no" or "yes" answer means empty fields. "missing" lists, in ${lang === "es" ? "Spanish" : "English"}, the things the form still needs that they did not say (for example "children's ages"). "summary" is one warm sentence in ${lang === "es" ? "Mexican Spanish (usted)" : "plain English"} repeating back what you understood so they can check it.`;
+  return `You turn what a person says about their family into fields for a holiday-assistance form. Copy only what they said; use "" or 0 or [] for anything not stated, never guess. Phone as 10 digits (people often say the digits in groups, or in Spanish). can_text is true if they agreed to texts, or said nothing about it; false only if they declined. City is Truckee, Soda Springs, or what they said. Children: first name; age in years, null when the age was not stated, 0 only when they said baby, newborn, or under one; boy or girl if stated; coat true only if they said the child needs a coat. adults is the number of adults in the home if stated, else 0. want_food, want_toys, want_coats are true only if they asked for that. When a question is given, fill only what that answer says; leave everything else empty. A plain "no" or "yes" answer means empty fields. "missing" lists, in ${lang === "es" ? "Spanish" : "English"}, the things the form still needs that they did not say (for example "children's ages"). "summary" is one warm sentence in ${lang === "es" ? "Mexican Spanish (usted)" : "plain English"} repeating back what you understood so they can check it.`;
+}
+
+// Keep the newest turns that fit the character budget, and start on a user turn.
+export function trimHistory(history) {
+  const clean = (Array.isArray(history) ? history : [])
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_TEXT) }))
+    .slice(-MAX_HISTORY_TURNS);
+  const kept = [];
+  let budget = MAX_HISTORY_CHARS;
+  for (let i = clean.length - 1; i >= 0; i--) {
+    if (clean[i].content.length > budget) break;
+    budget -= clean[i].content.length;
+    kept.unshift(clean[i]);
+  }
+  while (kept.length && kept[0].role !== "user") kept.shift();
+  return kept;
 }
 
 // `ask` is injectable so tests never touch the network.
@@ -65,12 +102,9 @@ export function makeAsk(env) {
 export async function handleHelp(req, env, season, ask = makeAsk(env)) {
   let body; try { body = await req.json(); } catch { return { status: 400, data: { error: "bad_json" } }; }
   const lang = body.lang === "es" ? "es" : "en";
-  const history = Array.isArray(body.history) ? body.history.slice(-8) : [];
   const question = String(body.question || "").slice(0, MAX_TEXT).trim();
   if (!question) return { status: 400, data: { error: "empty" } };
-  const messages = history
-    .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-    .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_TEXT) }));
+  const messages = trimHistory(body.history);
   messages.push({ role: "user", content: question });
   const resp = await ask({
     model: MODEL, max_tokens: 600,
@@ -92,7 +126,7 @@ export async function handleExtract(req, env, season, ask = makeAsk(env)) {
   const question = typeof body.question === "string" ? body.question.slice(0, 400) : "";
   const content = question ? `The person was asked: "${question}"\nThey answered: ${text}` : text;
   const resp = await ask({
-    model: MODEL, max_tokens: 4000,
+    model: MODEL, max_tokens: 1000,
     system: [{ type: "text", text: extractSystem(lang), cache_control: { type: "ephemeral" } }],
     output_config: { effort: "low", format: { type: "json_schema", schema: EXTRACT_SCHEMA } },
     messages: [{ role: "user", content }],

@@ -34,11 +34,17 @@ PAGES = {
     "privacy": "page.html",
 }
 
+# Photos in the home page strip, in order. Files live in site/static/img/photos/.
+HOME_PHOTOS = ["tcc-1.jpg", "tcc-2.jpg", "tcc-3.jpg", "tcc-4.jpg"]
+
 # Keys of season.json that the browser is allowed to see.
 CLIENT_CONFIG_KEYS = [
     "season", "timezone", "opens", "closes", "mode", "announcement",
     "help_phone", "help_email", "service_area", "api_base", "recipients",
 ]
+
+# JPEG "start of frame" markers. Any of them carries the image height and width.
+JPEG_SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 
 
 def load_yaml(path):
@@ -61,11 +67,53 @@ def localize(node, lang):
     return node
 
 
+def jpeg_size(path):
+    """(width, height) of a JPEG read from its start-of-frame marker, or None.
+
+    Enough for width/height attributes on <img>, so the browser reserves the space
+    before the file arrives. No image library needed.
+    """
+    data = Path(path).read_bytes()
+    if data[:2] != b"\xff\xd8":
+        return None
+    i = 2
+    while i + 9 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in (0x01, 0xD8) or 0xD0 <= marker <= 0xD7:  # markers without a length
+            i += 2
+            continue
+        length = int.from_bytes(data[i + 2:i + 4], "big")
+        if marker in JPEG_SOF:
+            height = int.from_bytes(data[i + 5:i + 7], "big")
+            width = int.from_bytes(data[i + 7:i + 9], "big")
+            return width, height
+        i += 2 + length
+    return None
+
+
+def home_photos():
+    photos = []
+    for name in HOME_PHOTOS:
+        f = SITE / "static" / "img" / "photos" / name
+        size = jpeg_size(f) if f.exists() else None
+        photos.append({"file": name, "width": size[0] if size else None, "height": size[1] if size else None})
+    return photos
+
+
 def build(base_path="", out=ROOT / "dist"):
     config = json.load(open(ROOT / "config" / "season.json"))
+    if not config.get("recipients"):
+        raise SystemExit("config/season.json has no recipients: the form would encrypt to nobody. Run node bin/keygen.mjs first.")
     base_path = base_path.rstrip("/")
     strings = load_yaml(SITE / "content" / "strings.yaml")
     schools = load_yaml(SITE / "content" / "schools.yaml")
+    photos = home_photos()
 
     env = Environment(
         loader=FileSystemLoader(SITE / "templates"),
@@ -113,13 +161,17 @@ def build(base_path="", out=ROOT / "dist"):
                 template, dest,
                 lang=lang, other_lang=other, slug=slug, base=base_path,
                 s=s, page=content, config=config, client_config=client_config, asset_v=asset_v,
+                photos=photos,
                 this_path=f"{base_path}/{lang}/{path}",
                 other_path=f"{base_path}/{other}/{path}",
                 announcement=(config.get("announcement") or {}).get(lang, ""),
             )
 
-    render("redirect.html", "index.html", base=base_path, asset_v=asset_v)
-    render("redirect.html", "404.html", base=base_path, asset_v=asset_v)
+    # The root is a pure redirect to the visitor's language. The 404 page is the same
+    # template plus a guard: an unknown path already under /en/ or /es/ must not redirect
+    # again (it would loop), and old Wix addresses are mapped to the new pages.
+    render("redirect.html", "index.html", base=base_path, asset_v=asset_v, is_404=False)
+    render("redirect.html", "404.html", base=base_path, asset_v=asset_v, is_404=True)
     (out / ".nojekyll").write_text("")
     if config.get("cname"):
         (out / "CNAME").write_text(config["cname"] + "\n")
