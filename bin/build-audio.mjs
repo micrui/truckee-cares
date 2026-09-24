@@ -41,10 +41,15 @@ export function narration(lang) {
 }
 
 function loadKey() {
-  if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+  // The file written by bin/set-openai-key wins over a stale shell variable.
   const p = join(homedir(), ".config", "truckee-cares", "openai-key");
-  if (existsSync(p)) return readFileSync(p, "utf8").trim();
-  return null;
+  const key = existsSync(p) ? readFileSync(p, "utf8").trim() : (process.env.OPENAI_API_KEY || "");
+  if (!key) return null;
+  if (!key.startsWith("sk-")) {
+    console.error(`${existsSync(p) ? p : "OPENAI_API_KEY"} does not look like an OpenAI secret key (they start with sk-). The dashboard's "Tracking ID" (key_…) is not the secret. Run bin/set-openai-key again with the secret.`);
+    process.exit(1);
+  }
+  return key;
 }
 
 export async function synthesize(key, lang, text) {
