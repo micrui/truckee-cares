@@ -21,7 +21,9 @@
    `~/.config/truckee-cares/openai-key`. Then `npm run audio` renders one MP3 per form
    screen per language into `site/static/audio/` (about 5,600 characters, a few cents).
    Commit the MP3s. Re-run after changing form text; only changed screens re-render.
-   For spoken help answers, also `npx wrangler secret put OPENAI_API_KEY --config worker/wrangler.toml`.
+   For spoken help answers, also `bin/push-secret openai-key OPENAI_API_KEY`.
+   Claude (help chat in the form, and the matching judge in the review tool) uses one key:
+   `bin/set-secret anthropic-key`, then `bin/push-secret anthropic-key ANTHROPIC_API_KEY`.
 4. **Site.** Push to `main`. GitHub Pages builds from the Actions workflow. Custom domain:
    write it into `config/cname`, add the DNS record, and push.
 

@@ -8,6 +8,8 @@ Set TCC_JUDGE=none to skip the model and route every gray-zone pair to a person.
 import json
 import os
 
+from .paths import KEY_DIR
+
 MODEL = os.environ.get("TCC_JUDGE_MODEL", "claude-opus-5")
 
 SYSTEM = """You help volunteers at a small holiday-assistance nonprofit in Truckee, California decide whether two applications were filed by the same family. Applicants are often Spanish-speaking; names get spelled several ways, nicknames are common (Lupe/Guadalupe, Chuy/Jesus), and two adults in one home sometimes both apply. Between seasons children get about one year older and families sometimes move. A volunteer or teacher may file for several families from one phone, so a shared phone alone means little.
@@ -26,6 +28,14 @@ SCHEMA = {
     "required": ["verdict", "confidence", "reason", "suggested_action", "question_for_applicant"],
     "additionalProperties": False,
 }
+
+
+def anthropic_key():
+    """~/.config/truckee-cares/anthropic-key (bin/set-secret anthropic-key) wins over the env var."""
+    p = KEY_DIR / "anthropic-key"
+    if p.exists():
+        return p.read_text().strip()
+    return os.environ.get("ANTHROPIC_API_KEY")
 
 
 def view(app):
@@ -51,7 +61,7 @@ def judge_pair(app_a, app_b, reasons):
     if os.environ.get("TCC_JUDGE", "claude") == "none":
         return {"verdict": "unsure", "confidence": 0, "reason": "judge disabled", "suggested_action": "ask_human", "question_for_applicant": ""}
     import anthropic
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=anthropic_key())
     user = ("Two applications. Rule-based hints: " + "; ".join(reasons) + "\n\nA:\n" + json.dumps(view(app_a), ensure_ascii=False, indent=1)
             + "\n\nB:\n" + json.dumps(view(app_b), ensure_ascii=False, indent=1) + "\n\nSame family?")
     resp = client.messages.create(
