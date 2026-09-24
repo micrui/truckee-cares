@@ -5,6 +5,7 @@ import sys
 
 from .db import connect, log
 from .paths import DB_PATH
+from .sync import ReviewSetupError
 
 
 def purge_local(con, season):
@@ -31,13 +32,13 @@ def purge_local(con, season):
         for chunk in range(0, len(ids), 500):
             part = ids[chunk:chunk + 500]
             counts["events"] += con.execute(f"DELETE FROM events WHERE ref IN ({','.join('?' * len(part))})", part).rowcount
-    con.execute("DELETE FROM meta WHERE key=?", (f"since:{season}",))
+    con.execute("DELETE FROM meta WHERE key IN (?, ?, ?)", (f"since:{season}", f"since_id:{season}", f"failed:{season}"))
     log(con, "purge_local", season, json.dumps(counts))
     con.commit()
     return counts
 
 
-def main(argv=None):
+def run(argv=None):
     p = argparse.ArgumentParser(prog="review", description="Truckee Community Cares local review tool")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("import", help="import a JotForm xlsx export from a prior season"); s.add_argument("xlsx"); s.add_argument("--season", required=True); s.add_argument("--status", default="accepted")
@@ -52,6 +53,9 @@ def main(argv=None):
     s = sub.add_parser("purge-server", help="delete a season from the server (after distribution, or 'preview')"); s.add_argument("season")
     s.add_argument("--force", action="store_true", help="for preview: delete even if some preview rows were submitted during the real season")
     s = sub.add_parser("purge-local", help="delete a season's applications from the local database"); s.add_argument("season")
+    s = sub.add_parser("retry-failed", help="fetch again just the rows this Mac could not read (after a new key lands here)"); s.add_argument("--season")
+    s = sub.add_parser("delete-server", help="delete one submission from the server (junk or a test row); asks you to type the id"); s.add_argument("id")
+    s = sub.add_parser("delete-failed", help="delete every row this Mac could not read from the server (a spam flood); asks you to type the season"); s.add_argument("--season", required=True)
     a = p.parse_args(argv)
     con = connect()
     if a.cmd == "import":
@@ -96,6 +100,35 @@ def main(argv=None):
     elif a.cmd == "purge-local":
         counts = purge_local(con, a.season)
         print(f"deleted for {a.season}: " + ", ".join(f"{v} {k}" for k, v in counts.items()))
+    elif a.cmd == "retry-failed":
+        from .sync import load_config, retry_failed
+        season = a.season or load_config()["season"]
+        stored, still, gone = retry_failed(con, season)
+        print(f"{season}: stored {stored}, still unreadable {still}, gone from the server {gone}")
+    elif a.cmd == "delete-server":
+        from .sync import delete_server
+        if input(f"Type the id ({a.id}) to delete it from the server: ") != a.id:
+            sys.exit("aborted")
+        print(f"deleted {delete_server(con, a.id)} row(s)")
+    elif a.cmd == "delete-failed":
+        from .sync import delete_failed, failed_ids
+        ids = failed_ids(con, a.season)
+        if not ids:
+            sys.exit(f"no unreadable rows recorded for {a.season} on this Mac")
+        print(f"{len(ids)} row(s) of {a.season} could not be read on this Mac. A missing key on this Mac lands rows here too; "
+              "delete only when you are sure they are junk (see docs/runbook.md, Undecryptable rows).")
+        if input(f"Type the season ({a.season}) to delete all {len(ids)} from the server: ") != a.season:
+            sys.exit("aborted")
+        deleted, tried = delete_failed(con, a.season)
+        print(f"deleted {deleted} row(s) of {tried} tried")
+
+
+def main(argv=None):
+    """A missing key or token is a message and exit code 1, not a traceback."""
+    try:
+        run(argv)
+    except ReviewSetupError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":

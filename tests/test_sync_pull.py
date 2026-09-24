@@ -1,19 +1,24 @@
-"""pull(): one unreadable row never blocks the season, the cursor stops at the first
-failure, preview rows submitted during the season become tasks, and nothing decrypted
-ever reaches the events or tasks tables."""
+"""pull(): pages through every server row, one unreadable row never blocks the season
+and never pins the cursor, unreadable ids are kept in failed:<season> for retry-failed
+and delete-failed, preview rows submitted during the season become tasks once, and
+nothing decrypted ever reaches the events or tasks tables."""
 import base64
+import builtins
 import json
 import os
+import re
 import sys
+import urllib.error
 import urllib.parse
 from pathlib import Path
 
 import pyrage
+import pytest
 
 os.environ["TCC_JUDGE"] = "none"
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from review import sync  # noqa: E402
+from review import cli, sync  # noqa: E402
 from review.db import connect  # noqa: E402
 
 CFG = {"season": "2026", "timezone": "America/Los_Angeles", "opens": "2026-10-15T00:00:00", "closes": "2026-11-15T23:59:59", "mode": "pickup", "api_base": "http://stub"}
@@ -35,69 +40,210 @@ def good_payload(first):
                        "children": [{"first_name": "Ana", "age": 4, "sex": "girl"}], "programs": {"food": True}}, ensure_ascii=False)
 
 
+def row(sid, created, ident, text, lang="es"):
+    return {"id": sid, "created_at": created, "lang": lang, "status": "new", "ciphertext": encrypt(ident, text)}
+
+
 class Server:
-    """Stands in for the Worker: rows per season, filtered by since like the real query."""
-    def __init__(self, rows):
+    """Stands in for the Worker: keyset pages per season exactly like the real query
+    (created_at > since OR (created_at = since AND id > since_id), ordered, LIMIT page),
+    one row by id, delete by id. Every call is recorded."""
+    def __init__(self, rows, page=500):
         self.rows = rows
+        self.page = page
         self.calls = []
 
     def api(self, method, path, body=None, headers=None):
         u = urllib.parse.urlparse(path); q = urllib.parse.parse_qs(u.query)
-        season = q.get("season", [""])[0]; since = q.get("since", [""])[0]
-        self.calls.append((method, season, since))
-        items = [r for r in self.rows.get(season, []) if r["created_at"] > since]
-        return {"season": season, "items": sorted(items, key=lambda r: r["created_at"])}
+        m = re.fullmatch(r"/api/admin/submissions/([A-Z0-9-]+)", u.path)
+        if m:
+            sid = m.group(1)
+            self.calls.append((method, sid))
+            for rows in self.rows.values():
+                for r in rows:
+                    if r["id"] == sid:
+                        if method == "DELETE":
+                            rows.remove(r); return {"deleted": 1}
+                        return {"item": r}
+            if method == "DELETE":
+                return {"deleted": 0}
+            raise urllib.error.HTTPError(path, 404, "not found", {}, None)
+        season = q.get("season", [""])[0]; since = q.get("since", [""])[0]; since_id = q.get("since_id", [""])[0]
+        self.calls.append((method, season, since, since_id))
+        items = sorted((r for r in self.rows.get(season, []) if r["created_at"] > since or (r["created_at"] == since and r["id"] > since_id)),
+                       key=lambda r: (r["created_at"], r["id"]))[:self.page]
+        last = items[-1] if items else None
+        return {"season": season, "items": items, "next_since": last["created_at"] if last else since,
+                "next_id": last["id"] if last else since_id, "has_more": len(items) >= self.page}
 
 
-def setup(monkeypatch, tmp_path, rows, ident=None):
+def setup(monkeypatch, tmp_path, rows, ident=None, page=500):
     ident = ident or pyrage.x25519.Identity.generate()
-    srv = Server(rows)
+    srv = Server(rows, page)
     monkeypatch.setattr(sync, "load_config", lambda: dict(CFG))
     monkeypatch.setattr(sync, "load_identities", lambda: [ident])
     monkeypatch.setattr(sync, "api", srv.api)
     return connect(tmp_path / "t.sqlite"), ident, srv
 
 
-def test_bad_row_does_not_block_and_cursor_stops_before_it(monkeypatch, tmp_path):
+def meta(con, key):
+    r = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return r[0] if r else None
+
+
+def test_bad_row_does_not_block_and_the_cursor_moves_past_it(monkeypatch, tmp_path):
     ident = pyrage.x25519.Identity.generate()
     rows = {"2026": [
-        {"id": "TCC-A1", "created_at": "2026-10-20T10:00:00.000Z", "lang": "es", "status": "new", "ciphertext": encrypt(ident, good_payload("Ana"))},
-        {"id": "TCC-B2", "created_at": "2026-10-20T11:00:00.000Z", "lang": "es", "status": "new", "ciphertext": encrypt(ident, "not json " + SECRET)},
-        {"id": "TCC-C3", "created_at": "2026-10-20T12:00:00.000Z", "lang": "en", "status": "new", "ciphertext": encrypt(ident, good_payload("Carla"))},
+        row("TCC-A1", "2026-10-20T10:00:00.000Z", ident, good_payload("Ana")),
+        row("TCC-B2", "2026-10-20T11:00:00.000Z", ident, "not json " + SECRET),
+        row("TCC-C3", "2026-10-20T12:00:00.000Z", ident, good_payload("Carla"), lang="en"),
     ], "preview": []}
     con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
     assert sync.pull(con) == (2, 1)
-    ids = {r[0] for r in con.execute("SELECT id FROM applications")}
-    assert ids == {"TCC-A1", "TCC-C3"}
-    assert con.execute("SELECT value FROM meta WHERE key='since:2026'").fetchone()[0] == "2026-10-20T10:00:00.000Z"
+    assert {r[0] for r in con.execute("SELECT id FROM applications")} == {"TCC-A1", "TCC-C3"}
+    # The cursor is past the bad row, both parts stored; the bad id is in the failed list.
+    assert meta(con, "since:2026") == "2026-10-20T12:00:00.000Z"
+    assert meta(con, "since_id:2026") == "TCC-C3"
+    assert sync.failed_ids(con, "2026") == ["TCC-B2"]
     tasks = con.execute("SELECT * FROM tasks WHERE kind='decrypt_error'").fetchall()
     assert len(tasks) == 1 and tasks[0]["title"] == "Could not read submission TCC-B2" and tasks[0]["app_id"] is None
-    # second pull: the bad row is fetched again, nothing new, still one task
-    assert sync.pull(con) == (0, 1)
-    assert srv.calls[-2] == ("GET", "2026", "2026-10-20T10:00:00.000Z")
+    # Second pull: asks from the cursor, gets nothing, so the bad row is not fetched again and nothing is repeated.
+    assert sync.pull(con) == (0, 0)
+    assert srv.calls[-2] == ("GET", "2026", "2026-10-20T12:00:00.000Z", "TCC-C3")
     assert con.execute("SELECT COUNT(*) FROM tasks WHERE kind='decrypt_error'").fetchone()[0] == 1
     assert con.execute("SELECT COUNT(*) FROM applications").fetchone()[0] == 2
-    # the plaintext never reached the database outside the applications table
-    for table in ("events", "tasks"):
+    assert con.execute("SELECT COUNT(*) FROM events WHERE kind='bad_payload' AND ref='TCC-B2'").fetchone()[0] == 1
+    # The plaintext never reached the database outside the applications table.
+    for table in ("events", "tasks", "meta"):
         for r in con.execute(f"SELECT * FROM {table}"):
             assert SECRET not in json.dumps(dict(r))
-    assert con.execute("SELECT COUNT(*) FROM events WHERE kind='bad_payload' AND ref='TCC-B2'").fetchone()[0] == 2
+    # A reset fetches everything again: stored rows are skipped by id, the bad row fails again
+    # but stays one task and one failed id.
+    sync.reset_cursor(con, "2026")
+    assert sync.pull(con) == (0, 1)
+    assert con.execute("SELECT COUNT(*) FROM tasks WHERE kind='decrypt_error'").fetchone()[0] == 1
+    assert sync.failed_ids(con, "2026") == ["TCC-B2"]
+    assert meta(con, "since_id:2026") == "TCC-C3"
 
 
-def test_wrong_key_row_is_a_decrypt_error(monkeypatch, tmp_path):
+def test_pull_pages_until_has_more_is_false(monkeypatch, tmp_path):
+    ident = pyrage.x25519.Identity.generate()
+    # Five rows sharing one timestamp, pages of two: only (created_at, id) paging gets them all.
+    rows = {"2026": [row(f"TCC-R{i}", "2026-10-20T10:00:00.000Z", ident, good_payload(f"R{i}")) for i in range(1, 6)], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident, page=2)
+    assert sync.pull(con) == (5, 0)
+    season_calls = [c for c in srv.calls if c[1] == "2026"]
+    assert [(c[2], c[3]) for c in season_calls] == [("", ""), ("2026-10-20T10:00:00.000Z", "TCC-R2"), ("2026-10-20T10:00:00.000Z", "TCC-R4")]
+    assert con.execute("SELECT COUNT(*) FROM applications WHERE season='2026'").fetchone()[0] == 5
+    assert meta(con, "since_id:2026") == "TCC-R5"
+    assert "pages=3" in con.execute("SELECT detail FROM events WHERE kind='pull' AND ref='2026'").fetchone()[0]
+    # A sixth row lands: one more page, nothing repeated.
+    rows["2026"].append(row("TCC-R6", "2026-10-20T10:00:01.000Z", ident, good_payload("R6")))
+    assert sync.pull(con) == (1, 0)
+    assert [c for c in srv.calls if c[1] == "2026"][-1] == ("GET", "2026", "2026-10-20T10:00:00.000Z", "TCC-R5")
+
+
+def test_a_cursor_without_since_id_is_tolerated(monkeypatch, tmp_path):
+    """An older database stored only since:<season>. The server then repeats the rows at
+    that timestamp; the ones already held are skipped by id and the cursor gains its id part."""
+    ident = pyrage.x25519.Identity.generate()
+    t = "2026-10-20T10:00:00.000Z"
+    rows = {"2026": [row("TCC-A", t, ident, good_payload("A")), row("TCC-B", t, ident, good_payload("B")), row("TCC-C", "2026-10-20T10:00:01.000Z", ident, good_payload("C"))], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    con.execute("INSERT INTO applications(id,season,source,submitted_at,lang,status,payload,norm) VALUES('TCC-A','2026','web',?,'es','new','{}','{}')", (t,))
+    con.execute("INSERT INTO meta(key,value) VALUES('since:2026',?)", (t,)); con.commit()
+    assert sync.pull(con) == (2, 0)
+    assert srv.calls[0] == ("GET", "2026", t, "")
+    assert con.execute("SELECT COUNT(*) FROM applications").fetchone()[0] == 3
+    assert (meta(con, "since:2026"), meta(con, "since_id:2026")) == ("2026-10-20T10:00:01.000Z", "TCC-C")
+
+
+def test_wrong_key_row_lands_in_failed_and_retry_reads_it_with_the_new_key(monkeypatch, tmp_path):
     ident = pyrage.x25519.Identity.generate(); other = pyrage.x25519.Identity.generate()
-    rows = {"2026": [{"id": "TCC-OLD", "created_at": "2026-10-01T00:00:00.000Z", "lang": "es", "ciphertext": encrypt(other, good_payload("Vieja"))}], "preview": []}
-    con, _, _ = setup(monkeypatch, tmp_path, rows, ident)
+    rows = {"2026": [row("TCC-OLD", "2026-10-01T00:00:00.000Z", other, good_payload("Vieja"))], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
     assert sync.pull(con) == (0, 1)
     assert con.execute("SELECT COUNT(*) FROM events WHERE kind='decrypt_error' AND ref='TCC-OLD'").fetchone()[0] == 1
-    assert con.execute("SELECT value FROM meta WHERE key='since:2026'").fetchone() is None
+    assert sync.failed_ids(con, "2026") == ["TCC-OLD"]
+    assert meta(con, "since:2026") == "2026-10-01T00:00:00.000Z"  # the cursor moved past it
+    # Still the wrong key: the retry fetches just that id and it still fails; one task, one id.
+    assert sync.retry_failed(con, "2026") == (0, 1, 0)
+    assert srv.calls[-1] == ("GET", "TCC-OLD")
+    assert sync.failed_ids(con, "2026") == ["TCC-OLD"]
+    assert con.execute("SELECT COUNT(*) FROM tasks WHERE kind='decrypt_error'").fetchone()[0] == 1
+    # The right key arrives on this Mac: the row is stored, leaves the list, and its task closes.
+    monkeypatch.setattr(sync, "load_identities", lambda: [ident, other])
+    assert sync.retry_failed(con, "2026") == (1, 0, 0)
+    assert con.execute("SELECT id FROM applications").fetchone()[0] == "TCC-OLD"
+    assert sync.failed_ids(con, "2026") == []
+    t = con.execute("SELECT status, resolution FROM tasks WHERE kind='decrypt_error'").fetchone()
+    assert (t["status"], t["resolution"]) == ("done", "read on a later pull")
+    # An id that is gone from the server is dropped from the list; junk in the list is dropped too.
+    sync.set_failed_ids(con, "2026", ["TCC-GONE", "not an id"]); con.commit()
+    assert sync.retry_failed(con, "2026") == (0, 0, 1)
+    assert sync.failed_ids(con, "2026") == []
+
+
+def test_failed_list_is_capped(tmp_path):
+    con = connect(tmp_path / "t.sqlite")
+    sync.set_failed_ids(con, "2026", [f"TCC-{i:05d}" for i in range(sync.FAILED_CAP + 3)])
+    ids = sync.failed_ids(con, "2026")
+    assert len(ids) == sync.FAILED_CAP and ids[0] == "TCC-00003" and ids[-1] == f"TCC-{sync.FAILED_CAP + 2:05d}"
+    con.execute("UPDATE meta SET value='not json' WHERE key='failed:2026'")
+    assert sync.failed_ids(con, "2026") == []
+
+
+def test_delete_server_and_delete_failed_need_a_typed_confirmation(monkeypatch, tmp_path):
+    ident = pyrage.x25519.Identity.generate(); other = pyrage.x25519.Identity.generate()
+    rows = {"2026": [
+        row("TCC-GOOD", "2026-10-20T10:00:00.000Z", ident, good_payload("Buena")),
+        row("TCC-J1", "2026-10-20T10:00:01.000Z", other, "junk"),
+        row("TCC-J2", "2026-10-20T10:00:02.000Z", other, "junk"),
+    ], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    monkeypatch.setattr(cli, "connect", lambda: con)
+    assert sync.pull(con) == (1, 2)
+    assert sync.failed_ids(con, "2026") == ["TCC-J1", "TCC-J2"]
+    deletes = lambda: [c for c in srv.calls if c[0] == "DELETE"]  # noqa: E731
+    # delete-server: the wrong id typed aborts and sends nothing.
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "TCC-J2")
+    with pytest.raises(SystemExit, match="aborted"):
+        cli.main(["delete-server", "TCC-J1"])
+    assert deletes() == []
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "TCC-J1")
+    cli.main(["delete-server", "TCC-J1"])
+    assert deletes() == [("DELETE", "TCC-J1")]
+    assert [r["id"] for r in rows["2026"]] == ["TCC-GOOD", "TCC-J2"]
+    assert sync.failed_ids(con, "2026") == ["TCC-J2"]
+    assert con.execute("SELECT status, resolution FROM tasks WHERE title='Could not read submission TCC-J1'").fetchone()[:] == ("done", "deleted from server")
+    # delete-failed: the season must be typed back; then every remaining failed id goes.
+    sync.set_failed_ids(con, "2026", ["TCC-J2", "TCC-ALREADY-GONE"]); con.commit()
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "2025")
+    with pytest.raises(SystemExit, match="aborted"):
+        cli.main(["delete-failed", "--season", "2026"])
+    assert deletes() == [("DELETE", "TCC-J1")]
+    monkeypatch.setattr(builtins, "input", lambda prompt="": "2026")
+    cli.main(["delete-failed", "--season", "2026"])
+    assert deletes() == [("DELETE", "TCC-J1"), ("DELETE", "TCC-J2"), ("DELETE", "TCC-ALREADY-GONE")]
+    assert [r["id"] for r in rows["2026"]] == ["TCC-GOOD"]
+    assert sync.failed_ids(con, "2026") == []
+    assert con.execute("SELECT COUNT(*) FROM tasks WHERE kind='decrypt_error' AND status='open'").fetchone()[0] == 0
+    assert con.execute("SELECT detail FROM events WHERE kind='delete_failed'").fetchone()[0] == "tried=2 deleted=1"
+    # Nothing left to delete: says so instead of asking.
+    with pytest.raises(SystemExit, match="no unreadable rows"):
+        cli.main(["delete-failed", "--season", "2026"])
+    # The good row was never touched.
+    assert con.execute("SELECT COUNT(*) FROM applications").fetchone()[0] == 1
+    # An id that is not an id never reaches the server.
+    with pytest.raises(ValueError):
+        sync.delete_server(con, "../season/2026")
 
 
 def test_bad_shape_is_a_bad_payload(monkeypatch, tmp_path):
     ident = pyrage.x25519.Identity.generate()
     rows = {"2026": [
-        {"id": "TCC-LIST", "created_at": "2026-10-20T10:00:00.000Z", "lang": "es", "ciphertext": encrypt(ident, '["not", "an", "object"]')},
-        {"id": "TCC-ODD", "created_at": "2026-10-20T11:00:00.000Z", "lang": "es", "ciphertext": encrypt(ident, json.dumps({"applicant": {"first_name": 5, "phone": ["x"]}, "children": "none", "programs": 3, "address": "1 Elm"}))},
+        row("TCC-LIST", "2026-10-20T10:00:00.000Z", ident, '["not", "an", "object"]'),
+        row("TCC-ODD", "2026-10-20T11:00:00.000Z", ident, json.dumps({"applicant": {"first_name": 5, "phone": ["x"]}, "children": "none", "programs": 3, "address": "1 Elm"})),
     ], "preview": []}
     con, _, _ = setup(monkeypatch, tmp_path, rows, ident)
     assert sync.pull(con) == (1, 1)  # the odd but object-shaped row is stored; the list is not
@@ -108,9 +254,9 @@ def test_bad_shape_is_a_bad_payload(monkeypatch, tmp_path):
 def test_preview_rows_in_window_become_tasks(monkeypatch, tmp_path):
     ident = pyrage.x25519.Identity.generate(); other = pyrage.x25519.Identity.generate()
     rows = {"2026": [], "preview": [
-        {"id": "TCC-PV-IN", "created_at": "2026-10-20T10:00:00.000Z", "lang": "es", "ciphertext": encrypt(ident, good_payload("Dentro"))},
-        {"id": "TCC-PV-OUT", "created_at": "2026-09-01T10:00:00.000Z", "lang": "es", "ciphertext": encrypt(ident, good_payload("Fuera"))},
-        {"id": "TCC-PV-BAD", "created_at": "2026-10-21T10:00:00.000Z", "lang": "es", "ciphertext": encrypt(other, good_payload("Rota"))},
+        row("TCC-PV-IN", "2026-10-20T10:00:00.000Z", ident, good_payload("Dentro")),
+        row("TCC-PV-OUT", "2026-09-01T10:00:00.000Z", ident, good_payload("Fuera")),
+        row("TCC-PV-BAD", "2026-10-21T10:00:00.000Z", other, good_payload("Rota")),
     ]}
     con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
     assert sync.pull(con) == (2, 1)
@@ -125,21 +271,46 @@ def test_preview_rows_in_window_become_tasks(monkeypatch, tmp_path):
     assert ids == ["TCC-PV-IN"] and open_tasks == 2
 
 
+def test_dismissed_preview_task_is_not_raised_again(monkeypatch, tmp_path):
+    ident = pyrage.x25519.Identity.generate(); other = pyrage.x25519.Identity.generate()
+    rows = {"2026": [], "preview": [
+        row("TCC-PV-IN", "2026-10-20T10:00:00.000Z", ident, good_payload("Dentro")),
+        row("TCC-PV-BAD", "2026-10-21T10:00:00.000Z", other, good_payload("Rota")),
+    ]}
+    con, _, _ = setup(monkeypatch, tmp_path, rows, ident)
+    sync.pull(con)
+    assert con.execute("SELECT COUNT(*) FROM tasks WHERE kind='preview_in_window'").fetchone()[0] == 2
+    con.execute("UPDATE tasks SET status='dismissed' WHERE kind='preview_in_window'"); con.commit()
+    sync.pull(con)  # nothing new from the cursor
+    sync.reset_cursor(con, "preview"); sync.pull(con)  # every row fetched again, readable and not
+    assert con.execute("SELECT COUNT(*) FROM tasks WHERE kind='preview_in_window'").fetchone()[0] == 2
+    assert con.execute("SELECT COUNT(*) FROM tasks WHERE kind='preview_in_window' AND status='dismissed'").fetchone()[0] == 2
+
+
 def test_pull_preview_only(monkeypatch, tmp_path):
     ident = pyrage.x25519.Identity.generate()
-    rows = {"2026": [{"id": "TCC-REAL", "created_at": "2026-10-20T10:00:00.000Z", "lang": "en", "ciphertext": encrypt(ident, good_payload("Real"))}],
-            "preview": [{"id": "TCC-PV", "created_at": "2026-09-20T10:00:00.000Z", "lang": "en", "ciphertext": encrypt(ident, good_payload("Prev"))}]}
+    rows = {"2026": [row("TCC-REAL", "2026-10-20T10:00:00.000Z", ident, good_payload("Real"), lang="en")],
+            "preview": [row("TCC-PV", "2026-09-20T10:00:00.000Z", ident, good_payload("Prev"), lang="en")]}
     con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
     assert sync.pull(con, season="preview") == (1, 0)
     assert [c[1] for c in srv.calls] == ["preview"]
     assert con.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
+def test_purge_local_forgets_the_cursor_and_the_failed_list(monkeypatch, tmp_path):
+    ident = pyrage.x25519.Identity.generate(); other = pyrage.x25519.Identity.generate()
+    rows = {"2026": [row("TCC-OK", "2026-10-20T10:00:00.000Z", ident, good_payload("Ok")), row("TCC-NO", "2026-10-20T11:00:00.000Z", other, "x")], "preview": []}
+    con, _, _ = setup(monkeypatch, tmp_path, rows, ident)
+    sync.pull(con)
+    assert {r[0] for r in con.execute("SELECT key FROM meta")} >= {"since:2026", "since_id:2026", "failed:2026"}
+    cli.purge_local(con, "2026")
+    assert {r[0] for r in con.execute("SELECT key FROM meta") if r[0].endswith(":2026")} == set()
+
+
 def test_load_identities_reads_every_key_file(monkeypatch, tmp_path):
     monkeypatch.delenv("TCC_KEY_FILE", raising=False)
     monkeypatch.setattr(sync, "KEY_DIR", tmp_path)
-    import pytest
-    with pytest.raises(SystemExit, match="keygen"):
+    with pytest.raises(sync.ReviewSetupError, match="keygen"):
         sync.load_identities()
     a = pyrage.x25519.Identity.generate(); b = pyrage.x25519.Identity.generate()
     (tmp_path / "season-2026.key").write_text(f"# comment\n{a}\n")
@@ -154,8 +325,20 @@ def test_load_identities_reads_every_key_file(monkeypatch, tmp_path):
 def test_admin_token_is_file_only(monkeypatch, tmp_path):
     monkeypatch.setenv("TCC_ADMIN_TOKEN", "from-env")
     monkeypatch.setattr(sync, "KEY_DIR", tmp_path)
-    import pytest
-    with pytest.raises(SystemExit, match="set-secret"):
+    with pytest.raises(sync.ReviewSetupError, match="set-secret"):
         sync.admin_token()
     (tmp_path / "admin-token").write_text("from-file\n")
     assert sync.admin_token() == "from-file"
+
+
+def test_cli_turns_a_setup_error_into_an_exit_message(monkeypatch, tmp_path):
+    """The command line exits with the message; the exception type is for the console."""
+    monkeypatch.delenv("TCC_KEY_FILE", raising=False)
+    monkeypatch.setattr(sync, "KEY_DIR", tmp_path / "empty")
+    monkeypatch.setattr(sync, "load_config", lambda: dict(CFG))
+    monkeypatch.setattr(sync, "api", lambda *a, **k: pytest.fail("no key, so the server must not be called"))
+    monkeypatch.setattr(cli, "connect", lambda: connect(tmp_path / "t.sqlite"))
+    assert issubclass(sync.ReviewSetupError, RuntimeError)
+    with pytest.raises(SystemExit) as ex:
+        cli.main(["pull"])
+    assert "keygen" in str(ex.value)

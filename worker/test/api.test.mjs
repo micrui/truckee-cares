@@ -1,7 +1,7 @@
 // Run: npm run test:worker   (node --test, no network, fake D1 and fake ratelimit bindings)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { handle, gate, makeId, localToUtc, clientKey, ipv6Prefix, assistWindow, looksLikeAgeArmor } from "../src/index.js";
+import worker, { handle, gate, makeId, localToUtc, clientKey, ipv6Prefix, assistWindow, looksLikeAgeArmor } from "../src/index.js";
 
 function fakeDB() {
   const rows = new Map();
@@ -23,9 +23,17 @@ function fakeDB() {
           if (sql.startsWith("DELETE")) { let n = 0; for (const [k, v] of rows) if (v.season === args[0]) { rows.delete(k); n++; } return { meta: { changes: n } }; }
         },
         async all() {
+          // The admin list: keyset on (created_at, id), the same predicate as the real query.
           const limit = Number(sql.match(/LIMIT (\d+)/)?.[1] || Infinity);
-          const results = [...rows.values()].filter((r) => r.season === args[0] && r.created_at > args[1]).sort(byTime).slice(0, limit);
+          const [season, since = "", sinceId = ""] = args;
+          const results = [...rows.values()]
+            .filter((r) => r.season === season && (r.created_at > since || (r.created_at === since && r.id > sinceId)))
+            .sort(byTime).slice(0, limit);
           return { results };
+        },
+        async first() {
+          if (/WHERE id = \?1/.test(sql)) return rows.get(args[0]) ?? null;
+          throw new Error("fake D1: unexpected first() for " + sql);
         },
       };
       return stmt;
@@ -246,29 +254,84 @@ test("failed admin auth is rate limited by address", async () => {
   assert.equal((await handle(req("GET", "/api/admin/submissions", { headers: { authorization: "Bearer secret-tokeN" } }), ok, AFTER)).status, 401);
 });
 
-test("admin list paginates 500 at a time with next_since and has_more", async () => {
+test("admin list is keyset paginated on (created_at, id): ties at the page edge are not lost or repeated", async () => {
   const e = env();
   const auth = { authorization: "Bearer secret-token" };
-  for (let i = 0; i < 501; i++) {
+  // 503 rows; rows 498..502 share one timestamp, so the first page ends inside a tie.
+  const stamp = (i) => (i >= 498 ? "2026-10-20T00:00:00Z" : `2026-10-${String(15 + Math.floor(i / 100)).padStart(2, "0")}T00:${String(i % 100).padStart(2, "0")}:00Z`);
+  for (let i = 0; i < 503; i++) {
     const id = "TCC-26-" + String(i).padStart(5, "0");
-    e.DB.rows.set(id, { id, season: "2026", lang: "en", created_at: `2026-10-${String(15 + Math.floor(i / 100)).padStart(2, "0")}T00:${String(i % 100).padStart(2, "0")}:00Z`, ciphertext: CT, status: "new", updated_at: null });
+    e.DB.rows.set(id, { id, season: "2026", lang: "en", created_at: stamp(i), ciphertext: CT, status: "new", updated_at: null });
   }
   e.DB.rows.set("TCC-PV-ZZZZZ", { id: "TCC-PV-ZZZZZ", season: "preview", lang: "en", created_at: "2026-10-15T00:00:00Z", ciphertext: CT, status: "new", updated_at: null });
-  const p1 = await (await handle(req("GET", "/api/admin/submissions?season=2026", { headers: auth }), e, AFTER)).json();
+  const list = (qs) => handle(req("GET", "/api/admin/submissions?season=2026" + qs, { headers: auth }), e, AFTER).then((r) => r.json());
+  const p1 = await list("");
   assert.equal(p1.items.length, 500);
   assert.equal(p1.has_more, true);
   assert.equal(p1.items[0].id, "TCC-26-00000");
-  assert.equal(p1.next_since, p1.items[499].created_at);
+  assert.equal(p1.next_since, "2026-10-20T00:00:00Z");
+  assert.equal(p1.next_id, "TCC-26-00499");
   assert.ok(p1.items.every((r) => r.season === "2026"));
-  const p2 = await (await handle(req("GET", `/api/admin/submissions?season=2026&since=${encodeURIComponent(p1.next_since)}`, { headers: auth }), e, AFTER)).json();
-  assert.equal(p2.items.length, 1);
-  assert.equal(p2.items[0].id, "TCC-26-00500");
+  const p2 = await list(`&since=${encodeURIComponent(p1.next_since)}&since_id=${p1.next_id}`);
+  assert.deepEqual(p2.items.map((r) => r.id), ["TCC-26-00500", "TCC-26-00501", "TCC-26-00502"]);
   assert.equal(p2.has_more, false);
-  assert.equal(p2.next_since, p2.items[0].created_at);
-  const p3 = await (await handle(req("GET", `/api/admin/submissions?season=2026&since=${encodeURIComponent(p2.next_since)}`, { headers: auth }), e, AFTER)).json();
+  assert.equal(p2.next_since, "2026-10-20T00:00:00Z");
+  assert.equal(p2.next_id, "TCC-26-00502");
+  const p3 = await list(`&since=${encodeURIComponent(p2.next_since)}&since_id=${p2.next_id}`);
   assert.deepEqual(p3.items, []);
   assert.equal(p3.has_more, false);
   assert.equal(p3.next_since, p2.next_since);
+  assert.equal(p3.next_id, p2.next_id);
+  // Every row seen exactly once across the pages.
+  const seen = [...p1.items, ...p2.items].map((r) => r.id);
+  assert.equal(new Set(seen).size, 503);
+  // An older client that sends only `since` gets the whole tie again (it skips by id), never a gap.
+  const noId = await list(`&since=${encodeURIComponent(p1.next_since)}`);
+  assert.deepEqual(noId.items.map((r) => r.id), ["TCC-26-00498", "TCC-26-00499", "TCC-26-00500", "TCC-26-00501", "TCC-26-00502"]);
+  assert.equal(noId.next_id, "TCC-26-00502");
+});
+
+test("admin can fetch one submission by id", async () => {
+  const e = env();
+  const auth = { authorization: "Bearer secret-token" };
+  e.DB.rows.set("TCC-26-ONE01", { id: "TCC-26-ONE01", season: "2026", lang: "es", created_at: "2026-10-20T00:00:00Z", ciphertext: CT, status: "new", updated_at: null });
+  assert.equal((await handle(req("GET", "/api/admin/submissions/TCC-26-ONE01"), e, AFTER)).status, 401);
+  const r = await handle(req("GET", "/api/admin/submissions/TCC-26-ONE01", { headers: auth }), e, AFTER);
+  assert.equal(r.status, 200);
+  const { item } = await r.json();
+  assert.equal(item.id, "TCC-26-ONE01");
+  assert.equal(item.ciphertext, CT);
+  assert.equal(item.lang, "es");
+  const missing = await handle(req("GET", "/api/admin/submissions/TCC-26-NOPE1", { headers: auth }), e, AFTER);
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error, "not_found");
+});
+
+test("PATCH with a null or non-object body is a 400, not a crash", async () => {
+  const e = env();
+  const auth = { authorization: "Bearer secret-token" };
+  e.DB.rows.set("TCC-26-AAAAA", { id: "TCC-26-AAAAA", season: "2026", lang: "en", created_at: "2026-10-20T00:00:00Z", ciphertext: CT, status: "new", updated_at: null });
+  for (const raw of ["null", "5", '"accepted"', "[]"]) {
+    const r = await handle(req("PATCH", "/api/admin/submissions/TCC-26-AAAAA", { headers: auth, raw }), e, AFTER);
+    assert.equal(r.status, 400, raw);
+    assert.equal((await r.json()).error, "bad_status");
+  }
+  assert.equal(e.DB.rows.get("TCC-26-AAAAA").status, "new");
+});
+
+test("a thrown error becomes a 500 that still carries the CORS headers", async () => {
+  const boom = { prepare() { throw new Error("D1 is down"); } };
+  const e = env({ DB: boom });
+  const quiet = console.error; console.error = () => {};
+  try {
+    const r = await worker.fetch(req("GET", "/api/admin/submissions?season=2026", { headers: { authorization: "Bearer secret-token", origin: "https://example.org" } }), e);
+    assert.equal(r.status, 500);
+    assert.equal((await r.json()).error, "server_error");
+    assert.equal(r.headers.get("access-control-allow-origin"), "https://example.org");
+    assert.equal(r.headers.get("vary"), "origin");
+  } finally {
+    console.error = quiet;
+  }
 });
 
 test("admin can delete one submission", async () => {

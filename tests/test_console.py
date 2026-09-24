@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import threading
+import urllib.parse
 from http.server import HTTPServer
 from pathlib import Path
 
@@ -192,11 +193,86 @@ def test_server_headers_and_csrf(tmp_path):
 
 
 def test_get_error_is_a_500_page_not_a_dropped_connection(tmp_path, monkeypatch):
+    """The dashboard is the one page that cannot redirect to the dashboard: a failure there is
+    a 500 page. Any other page's failure goes to the dashboard with an error card."""
     make_db(tmp_path).close()
-    monkeypatch.setattr(console, "dashboard", lambda con: 1 / 0)
+    monkeypatch.setattr(console, "dashboard", lambda con, q=None: 1 / 0)
+    monkeypatch.setattr(console, "families_page", lambda con, fid=None: sys.exit("families are gone"))
     box = serve_in_thread(tmp_path / "t.sqlite"); srv, port = box["srv"], box["port"]
     try:
-        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5); c.request("GET", "/"); r = c.getresponse(); body = r.read().decode(); c.close()
+        def get(path):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5); c.request("GET", path); r = c.getresponse(); body = r.read().decode(); c.close()
+            return r, body
+        r, body = get("/")
         assert r.status == 500 and "ZeroDivisionError" in body and r.getheader("content-security-policy") == console.CSP
+        r, _ = get("/families")
+        assert r.status == 303 and r.getheader("location") == "/?error=" + urllib.parse.quote("SystemExit: families are gone")
+        r, _ = get("/tasks")  # the server is still up
+        assert r.status == 200
+    finally:
+        srv.shutdown(); srv.server_close()
+
+
+def test_pull_without_a_key_redirects_with_the_message_and_the_server_survives(tmp_path, monkeypatch):
+    from review import sync
+    monkeypatch.delenv("TCC_KEY_FILE", raising=False)
+    monkeypatch.setattr(sync, "KEY_DIR", tmp_path / "no-keys")
+    monkeypatch.setattr(sync, "api", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no key, so the server must not be called")))
+    make_db(tmp_path).close()
+    con = connect(tmp_path / "t.sqlite")
+    box = serve_in_thread(tmp_path / "t.sqlite"); srv, port = box["srv"], box["port"]
+    try:
+        def req(method, path, body=None):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request(method, path, body=body, headers={"host": f"127.0.0.1:{port}", "origin": f"http://127.0.0.1:{port}", "content-type": "application/x-www-form-urlencoded"})
+            r = c.getresponse(); data = r.read(); c.close()
+            return r, data
+        r, _ = req("POST", "/actions/pull", "")
+        assert r.status == 303
+        loc = r.getheader("location")
+        assert loc.startswith("/?error=") and "keygen" in urllib.parse.unquote(loc)
+        r, data = req("GET", loc)
+        assert r.status == 200 and b"The last action failed" in data and b"No age key found" in data and b"<script" not in data
+        assert con.execute("SELECT detail FROM events WHERE kind='error' AND ref='/actions/pull'").fetchone()[0].startswith("ReviewSetupError: No age key found")
+        # A bare SystemExit from an action gets the same treatment instead of killing the server.
+        monkeypatch.setattr(sync, "load_identities", lambda: sys.exit("bye"))
+        r, _ = req("POST", "/actions/pull", "")
+        assert r.status == 303 and urllib.parse.unquote(r.getheader("location")) == "/?error=SystemExit: bye"
+        r, _ = req("GET", "/")
+        assert r.status == 200
+    finally:
+        srv.shutdown(); srv.server_close()
+
+
+def test_decrypt_error_task_offers_delete_from_server(tmp_path, monkeypatch):
+    from review import sync
+    con = connect(tmp_path / "t.sqlite")
+    add_task(con, "decrypt_error", "Could not read submission TCC-26-JUNK1", detail="DecryptError: no matching keys")
+    add_task(con, "decrypt_error", "Could not read submission " + X, detail=X)  # a title that is not an id gets no button
+    sync.set_failed_ids(con, "2026", ["TCC-26-JUNK1", "TCC-26-OTHER"])
+    con.commit()
+    out = console.tasks_page(con, {})
+    assert out.count("Delete from server") == 1
+    assert 'name="confirm" value="TCC-26-JUNK1"' in out and "<img" not in out
+    tid = con.execute("SELECT id FROM tasks WHERE title='Could not read submission TCC-26-JUNK1'").fetchone()[0]
+    con.close()
+    calls = []
+    monkeypatch.setattr(sync, "api", lambda method, path, body=None, headers=None: calls.append((method, path)) or {"deleted": 1})
+    box = serve_in_thread(tmp_path / "t.sqlite"); srv, port = box["srv"], box["port"]
+    try:
+        def post(path, body):
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            c.request("POST", path, body=body, headers={"host": f"127.0.0.1:{port}", "origin": f"http://127.0.0.1:{port}", "content-type": "application/x-www-form-urlencoded"})
+            r = c.getresponse(); r.read(); c.close()
+            return r
+        r = post(f"/tasks/{tid}/delete-server", "confirm=TCC-26-OTHER")  # the echo must match the task's own id
+        assert r.status == 303 and calls == []
+        r = post(f"/tasks/{tid}/delete-server", "confirm=TCC-26-JUNK1")
+        assert r.status == 303 and r.getheader("location") == "/tasks"
+        assert calls == [("DELETE", "/api/admin/submissions/TCC-26-JUNK1")]
+        con = connect(tmp_path / "t.sqlite")
+        t = con.execute("SELECT status, resolution FROM tasks WHERE id=?", (tid,)).fetchone()
+        assert (t["status"], t["resolution"]) == ("done", "deleted from server")
+        assert sync.failed_ids(con, "2026") == ["TCC-26-OTHER"]
     finally:
         srv.shutdown(); srv.server_close()

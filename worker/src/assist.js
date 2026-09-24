@@ -101,6 +101,7 @@ export function makeAsk(env) {
 
 export async function handleHelp(req, env, season, ask = makeAsk(env)) {
   let body; try { body = await req.json(); } catch { return { status: 400, data: { error: "bad_json" } }; }
+  body = body && typeof body === "object" ? body : {};
   const lang = body.lang === "es" ? "es" : "en";
   const question = String(body.question || "").slice(0, MAX_TEXT).trim();
   if (!question) return { status: 400, data: { error: "empty" } };
@@ -119,6 +120,7 @@ export async function handleHelp(req, env, season, ask = makeAsk(env)) {
 
 export async function handleExtract(req, env, season, ask = makeAsk(env)) {
   let body; try { body = await req.json(); } catch { return { status: 400, data: { error: "bad_json" } }; }
+  body = body && typeof body === "object" ? body : {};
   const lang = body.lang === "es" ? "es" : "en";
   const text = String(body.text || "").slice(0, MAX_TEXT).trim();
   if (text.length < 2) return { status: 400, data: { error: "too_short" } };

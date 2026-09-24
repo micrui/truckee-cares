@@ -106,3 +106,16 @@ test("extract: a child's age is null when not stated, and passes through untouch
   assert.strictEqual(r.data.fields.children[1].age, 0);
   assert.deepEqual(r.data.missing, ["children's ages"]);
 });
+
+test("help and extract treat a null or non-object body as empty, not as a crash", async () => {
+  const ask = async () => { throw new Error("must not be called"); };
+  const rawReq = (raw) => new Request("https://api.test/x", { method: "POST", headers: { "content-type": "application/json" }, body: raw });
+  for (const raw of ["null", "7", '"text"', "[]"]) {
+    const h = await handleHelp(rawReq(raw), {}, season, ask);
+    assert.equal(h.status, 400, raw);
+    assert.equal(h.data.error, "empty");
+    const x = await handleExtract(rawReq(raw), {}, season, ask);
+    assert.equal(x.status, 400, raw);
+    assert.equal(x.data.error, "too_short");
+  }
+});

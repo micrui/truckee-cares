@@ -16,9 +16,10 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .db import now
+from .db import log, now
 from .match import load_apps, resolve_candidate, set_decision, run_matching
 from .paths import ROOT
+from .sync import error_task_id
 
 E = lambda v: html.escape("" if v is None else str(v))  # noqa: E731
 PROGRAMS = ("food", "toys", "coats")
@@ -119,14 +120,17 @@ def app_card_body(a, con):
 </form></div>"""
 
 
-def dashboard(con):
+def dashboard(con, q=None):
+    """`q` is the parsed query string; an `error` in it (set by a failed action) is shown as a card."""
+    err = (q or {}).get("error", [""])[0]
+    ecard = f"<div class='card error'><h3>The last action failed</h3><p style='white-space:pre-wrap'>{E(err)}</p></div>" if err else ""
     season_rows = con.execute("SELECT season, status, COUNT(*) n FROM applications GROUP BY season, status ORDER BY season DESC, status").fetchall()
     rows = "".join(f"<tr><td>{E(r['season'])}</td><td>{pill(r['status'])}</td><td>{E(r['n'])}</td></tr>" for r in season_rows)
     tasks = con.execute("SELECT kind, COUNT(*) n FROM tasks WHERE status='open' GROUP BY kind").fetchall()
     trow = "".join(f"<li><a href='/tasks?kind={E(urllib.parse.quote(t['kind']))}'>{E(t['kind'])}</a>: {E(t['n'])}</li>" for t in tasks) or "<li class='muted'>none</li>"
     events = con.execute("SELECT * FROM events ORDER BY id DESC LIMIT 12").fetchall()
     erow = "".join(f"<li><span class='muted'>{E(str(e['at'] or '')[:16])}</span> {E(e['kind'])} {E(e['ref'])} <span class='muted'>{E(str(e['detail'] or '')[:120])}</span></li>" for e in events)
-    return page("Dashboard", f"""<h1>Dashboard</h1>
+    return page("Dashboard", f"""<h1>Dashboard</h1>{ecard}
 <div class="pair"><div class="card"><h2>Applications</h2><table><tr><th>Season</th><th>Status</th><th>Count</th></tr>{rows}</table></div>
 <div class="card"><h2>Open tasks</h2><ul>{trow}</ul>
 <form method="post" action="/actions/pull" class="inline"><button class="btn btn-primary small">Pull new applications</button></form>
@@ -156,6 +160,11 @@ def task_card(t, con):
     elif t["app_id"]:
         A = load_apps(con, "id=?", (t["app_id"],))
         body += app_card(A[0], con) if A else "<p class='muted'>application no longer available</p>"
+    if t["kind"] == "decrypt_error":
+        sid = error_task_id(t["title"])
+        if sid:  # junk or spam: remove the row from the server. The hidden input echoes the id; the handler checks it.
+            body += f"""<form method="post" action="/tasks/{E(t['id'])}/delete-server" class="inline"><input type="hidden" name="confirm" value="{E(sid)}">
+<button class="btn btn-ghost small">Delete from server</button></form> """
     return body + close_form(t)
 
 
@@ -332,16 +341,33 @@ def make_handler(con, port):
             src = self.headers.get("origin") or self.headers.get("referer") or ""
             return any(src == o or src.startswith(o + "/") for o in origins)
 
+        def fail(self, e, where):
+            """Any error, SystemExit included: log it, undo uncommitted work, and show it on the
+            dashboard as an error card. The server keeps running. The dashboard itself failing
+            is the one case that cannot redirect, so it renders the 500 page instead."""
+            msg = f"{type(e).__name__}: {e}"[:500]
+            try:
+                con.rollback()
+            except Exception:
+                pass
+            try:
+                log(con, "error", where, msg); con.commit()
+            except Exception:
+                pass
+            if where == "/":
+                return self.send(error_page("Something went wrong", f"{msg}\n\n{traceback.format_exc()}"), status=500)
+            self.redirect("/?error=" + urllib.parse.quote(msg))
+
         def do_GET(self):
             try:
                 self.route_get()
-            except Exception as e:
-                self.send(error_page("Something went wrong", f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"), status=500)
+            except (Exception, SystemExit) as e:
+                self.fail(e, self.path.split("?")[0])
 
         def route_get(self):
             u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query); p = u.path
             season = q.get("season", [""])[0]
-            if p == "/": return self.send(dashboard(con))
+            if p == "/": return self.send(dashboard(con, q))
             if p == "/tasks": return self.send(tasks_page(con, q))
             if p == "/apps": return self.send(apps_page(con, q))
             if p.startswith("/apps/"):
@@ -360,30 +386,27 @@ def make_handler(con, port):
                 if not self.same_origin():
                     return self.send(error_page("Forbidden", "This request did not come from the console page."), status=403)
                 self.route_post()
-            except Exception as e:
-                try:
-                    con.rollback()
-                except Exception:
-                    pass
-                self.send(error_page("Something went wrong", f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"), status=500)
+            except (Exception, SystemExit) as e:  # an action failed part way, or a missing key: say so on the dashboard
+                self.fail(e, self.path.split("?")[0])
 
         def route_post(self):
             n = int(self.headers.get("content-length", 0)); form = urllib.parse.parse_qs(self.rfile.read(n).decode("utf-8", "replace"))
             g = lambda k: form.get(k, [""])[0]  # noqa: E731
             p = self.path.split("?")[0]
             if p in ("/actions/pull", "/actions/match", "/actions/push"):
-                try:
-                    if p == "/actions/pull":
-                        from .sync import pull; pull(con)
-                    elif p == "/actions/match":
-                        from .sync import load_config; run_matching(con, load_config()["season"])
-                    else:
-                        from .sync import push_statuses; push_statuses(con)
-                except Exception as e:  # the action failed part way; undo what is uncommitted and say so on the dashboard
-                    con.rollback()
-                    from .db import log
-                    log(con, "error", p, f"{type(e).__name__}: {e}"); con.commit()
+                if p == "/actions/pull":
+                    from .sync import pull; pull(con)
+                elif p == "/actions/match":
+                    from .sync import load_config; run_matching(con, load_config()["season"])
+                else:
+                    from .sync import push_statuses; push_statuses(con)
                 return self.redirect("/")
+            if p.startswith("/tasks/") and p.endswith("/delete-server"):
+                t = con.execute("SELECT * FROM tasks WHERE id=?", (p.split("/")[2],)).fetchone()
+                sid = error_task_id(t["title"]) if t and t["kind"] == "decrypt_error" else None
+                if sid and g("confirm") == sid:
+                    from .sync import delete_server; delete_server(con, sid)
+                return self.redirect("/tasks")
             if p.startswith("/apps/") and p.endswith("/decide"):
                 status = g("status")
                 if status in STATUSES:

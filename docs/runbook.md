@@ -122,6 +122,10 @@ member's Mac, never on a server or in a web page. To give a second person the co
 5. During the window, every day or two: `bin/review pull && bin/review match`, then
    `bin/review console` and work the task list. Decide on each application:
    accepted, hold, declined, duplicate, out_of_area. `bin/review push` when done.
+   `pull` fetches every server row it has not seen, 500 at a time, and reports how many it
+   could not read. Those rows never hold up the rest; see "Undecryptable rows" below for
+   what they mean and when to delete them. During the window, delete only rows you are
+   sure are junk.
 6. Early December: Exports → mailing labels and pickup cards. Text accepted families.
 7. After distribution: `bin/review purge-server 2026`, then `bin/review purge-server preview`
    and `bin/review purge-local preview` again. Shred CSV exports in Downloads and any
@@ -175,12 +179,39 @@ at any time.
 
 ## Undecryptable rows
 
-A `decrypt_error` task in the console (or a line in the log) means the review tool fetched
-a row it could not open with the keys on this Mac. Two causes: the application was
-submitted before this Mac's recipient was in the live site (only a Mac with an older key
-can open it), or this Mac has the wrong key file. Get the right key onto this Mac (see the
-second-member steps), then `bin/review pull --reset` to fetch and decrypt the season
-again.
+A `decrypt_error` task in the console (or a `decrypt_error` or `bad_payload` line in the
+log) means the review tool fetched a row it could not open or read. This is how `pull`
+treats such a row: it logs it, opens one task for it (a dismissed task stays dismissed),
+adds its id to a local list for the season, and moves on. The pull cursor moves past it,
+so one bad row, or ten thousand, never stops the season and is never fetched again by a
+plain `pull`. `pull` pages through every row on the server, 500 at a time, until there are
+none left, so a flood of junk costs time, not applications.
+
+Two causes, two answers:
+
+- **Key mismatch. Expected and harmless.** The application was submitted before this
+  Mac's recipient was in the live site, or this Mac has the wrong key file. Only a Mac
+  with the right key can open it; the row is fine and another board Mac probably reads
+  it. Nothing to delete. Once the right key is on this Mac (see the second-member steps,
+  or the backup key), `bin/review retry-failed --season 2026` fetches just the failed ids
+  again and stores the ones that now open; their tasks close on their own.
+  `bin/review pull --reset` does the same the slow way (every row again; rows already
+  stored are skipped).
+
+- **Junk or spam.** Someone posted rows that look like age files on the outside and are
+  garbage inside, or a flood of them. They fail on every Mac, every time. First make
+  sure that is what they are: a key mismatch on this Mac lands rows in the same list, so
+  check that another board Mac with the season key cannot read them either. Then
+  `bin/review delete-failed --season 2026` deletes every id in this Mac's failed list from
+  the server after you type the season back. For one row, `bin/review delete-server
+  TCC-26-XXXXX` (type the id back), or the "Delete from server" button on its task in the
+  console. Deleting is permanent apart from D1 time travel (see "If applications were
+  deleted by mistake"). The local list shrinks as each delete lands, so an interrupted
+  run can be rerun.
+
+The failed list lives in the local database (`failed:<season>`, at most 5,000 ids per
+season) and is this Mac's alone: each board Mac keeps its own. `bin/review purge-local`
+clears it with the season.
 
 ## Where plaintext exists besides the review database
 

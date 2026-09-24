@@ -5,7 +5,9 @@
 //   POST /api/help | /api/extract | /api/transcribe | /api/tts
 //                                    live help; only from 45 days before opens to a day after closes,
 //                                    or with header x-preview: <PREVIEW_TOKEN>
-//   GET  /api/admin/submissions      (Bearer ADMIN_TOKEN) [?season=&since=] -> { items, next_since, has_more }
+//   GET  /api/admin/submissions      (Bearer ADMIN_TOKEN) [?season=&since=&since_id=]
+//                                    -> { items, next_since, next_id, has_more }   keyset pages of 500
+//   GET  /api/admin/submissions/:id  (Bearer) -> { item } | 404
 //   PATCH /api/admin/submissions/:id (Bearer) <- { status } -> { ok }
 //   DELETE /api/admin/submissions/:id (Bearer) -> { deleted }
 //   DELETE /api/admin/season/:season (Bearer, header X-Confirm: <season>) -> { deleted }
@@ -144,9 +146,9 @@ export function looksLikeAgeArmor(ciphertext) {
   try { return atob(first).startsWith(AGE_HEADER); } catch { return false; }
 }
 
-export async function handle(req, env, now = Date.now()) {
+// `cors` is computed by the caller (fetch below) so the headers exist even when handle throws.
+export async function handle(req, env, now = Date.now(), cors = corsHeaders(req, env)) {
   const url = new URL(req.url);
-  const cors = corsHeaders(req, env);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
   const path = url.pathname.replace(/\/+$/, "");
   const assistOk = assistWindow(now) || isPreviewer(req, env);
@@ -223,18 +225,27 @@ export async function handle(req, env, now = Date.now()) {
     }
 
     if (req.method === "GET" && path === "/api/admin/submissions") {
+      // Keyset pagination on (created_at, id). A client without since_id gets the rows at
+      // the cursor's timestamp again; it skips the ones it already holds by id.
       const s = url.searchParams.get("season") || season.season;
       const since = url.searchParams.get("since") || "";
+      const sinceId = url.searchParams.get("since_id") || "";
       const { results } = await env.DB.prepare(
-        "SELECT id, season, lang, created_at, ciphertext, status, updated_at FROM submissions WHERE season = ?1 AND created_at > ?2 ORDER BY created_at, id LIMIT 500")
-        .bind(s, since).all();
-      const nextSince = results.length ? results[results.length - 1].created_at : since;
-      return json({ season: s, items: results, next_since: nextSince, has_more: results.length >= PAGE }, 200, cors);
+        "SELECT id, season, lang, created_at, ciphertext, status, updated_at FROM submissions WHERE season = ?1 AND (created_at > ?2 OR (created_at = ?2 AND id > ?3)) ORDER BY created_at, id LIMIT 500")
+        .bind(s, since, sinceId).all();
+      const last = results.length ? results[results.length - 1] : null;
+      return json({ season: s, items: results, next_since: last ? last.created_at : since, next_id: last ? last.id : sinceId, has_more: results.length >= PAGE }, 200, cors);
     }
 
     let m = path.match(/^\/api\/admin\/submissions\/([A-Z0-9-]+)$/);
+    if (req.method === "GET" && m) {
+      // One row by id, for the review tool's retry of rows it could not read.
+      const row = await env.DB.prepare("SELECT id, season, lang, created_at, ciphertext, status, updated_at FROM submissions WHERE id = ?1").bind(m[1]).first();
+      return row ? json({ item: row }, 200, cors) : json({ error: "not_found" }, 404, cors);
+    }
     if (req.method === "PATCH" && m) {
       let body; try { body = await req.json(); } catch { return json({ error: "bad_json" }, 400, cors); }
+      body = body && typeof body === "object" ? body : {};
       if (!STATUSES.has(body.status)) return json({ error: "bad_status" }, 400, cors);
       const r = await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2 WHERE id = ?3")
         .bind(body.status, new Date().toISOString(), m[1]).run();
@@ -260,7 +271,9 @@ export async function handle(req, env, now = Date.now()) {
 
 export default {
   async fetch(req, env) {
-    try { return await handle(req, env); }
-    catch (e) { console.error(e?.name, e?.status ?? ""); return json({ error: "server_error" }, 500); }
+    // CORS first, outside the try, so a 500 still carries the headers and the form can read it.
+    const cors = corsHeaders(req, env);
+    try { return await handle(req, env, Date.now(), cors); }
+    catch (e) { console.error(e?.name, e?.status ?? ""); return json({ error: "server_error" }, 500, cors); }
   },
 };
