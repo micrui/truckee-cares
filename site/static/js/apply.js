@@ -442,6 +442,7 @@ root.addEventListener("click", async (ev) => {
   if (a === "record") { await toggleRecording(); return; }
   if (a === "voice-start") { readInputs(); startVoice(); return; }
   if (a === "voice-replay") { voiceAsk(currentQuestion().key); return; }
+  if (a === "voice-begin") { voiceBegin(); return; }
   if (a === "voice-talk") { await voiceTalk(); return; }
   if (a === "voice-ok") { voiceNext(); return; }
   if (a === "voice-again") { voiceRepeat(); return; }
@@ -493,7 +494,7 @@ async function toggleRecording(onText) {
   catch (e) { rec.error = t("mic_denied"); render(); return; }
   const mime = pickMime();
   const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  rec = { state: "recording", recorder, chunks: [], stream, error: "" };
+  rec = { state: "recording", recorder, chunks: [], stream, error: "", onText: onText || null };
   recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
   recorder.onstop = async () => {
     stream.getTracks().forEach((tr) => tr.stop());
@@ -527,6 +528,15 @@ async function toggleRecording(onText) {
   setTimeout(() => { if (rec.recorder === recorder && recorder.state === "recording") recorder.stop(); }, 90000);
 }
 
+// People say sizes in words, in either language. Map them to the size chips.
+function normalizeSize(v) {
+  const x = String(v || "").trim().toLowerCase();
+  const table = [[/^(3xl|xxxl|triple)/, "3XL"], [/^(2xl|xxl|doble)/, "2XL"], [/^(xl|extra ?grande|extra ?large)/, "XL"], [/^(l|large|grande)/, "L"],
+    [/^(m|medium|median[ao])/, "M"], [/^(s|small|chic[ao]|peque[ñn][ao])/, "S"]];
+  for (const [re, out] of table) if (re.test(x)) return out;
+  return String(v || "").toUpperCase().slice(0, 4);
+}
+
 function applyExtracted(f, { replaceChildren = true } = {}) {
   const cities = config.service_area.cities.map((c) => c.toLowerCase());
   const keep = (v, cur) => (v === "" || v === 0 || v === null || v === undefined || (Array.isArray(v) && !v.length)) ? cur : v;
@@ -537,7 +547,7 @@ function applyExtracted(f, { replaceChildren = true } = {}) {
   if (f.city) { const i = cities.indexOf(f.city.toLowerCase()); state.city = i >= 0 ? config.service_area.cities[i] : "other"; state.city_other = i >= 0 ? "" : f.city; }
   if (f.mail_street) { state.mail_same = "no"; state.mail_street = f.mail_street; }
   if (f.adults) state.adults = String(f.adults);
-  if (f.adult_coat_sizes?.length) { state.adult_coat_sizes = f.adult_coat_sizes; state.adult_coats = "yes"; }
+  if (f.adult_coat_sizes?.length) { state.adult_coat_sizes = f.adult_coat_sizes.map(normalizeSize); state.adult_coats = "yes"; }
   if (f.children?.length) {
     const kids = f.children.map((c) => ({ ...blankChild(), first_name: c.first_name || "", age: c.age ?? "", sex: c.sex || "", coat: c.coat ? "yes" : "no" }));
     state.children = replaceChildren ? kids : state.children.concat(kids); state.no_children = false; state.want_toys = true;
@@ -633,12 +643,16 @@ function unlockAudio() {
   voiceAudio.play().catch(() => {});
 }
 function voicePlay(src, onend) {
+  // Whatever happens to the audio (blocked autoplay, missing file, network), the flow
+  // must continue: onend runs exactly once, on end, on error, or on a blocked play.
   stopSpeaking();
   if (!voiceAudio) unlockAudio();
-  voiceAudio.onended = () => { speaking = false; if (onend) onend(); };
-  voiceAudio.onerror = () => { speaking = false; };
+  let done = false;
+  const finish = () => { if (done) return; done = true; speaking = false; if (onend) onend(); };
+  voiceAudio.onended = finish;
+  voiceAudio.onerror = finish;
   voiceAudio.src = src; speaking = true;
-  voiceAudio.play().catch(() => { speaking = false; });
+  voiceAudio.play().catch(finish);
 }
 async function voiceSay(text, onend) {
   try {
@@ -658,7 +672,11 @@ function startVoice() {
   view = "voice";
   voice = { qi: -1, phase: "intro", transcript: "", readback: "", error: "", missingKey: null, rounds: 0 };
   render();
-  voicePlay(`${base}/static/audio/${lang}/voice_intro.mp3`, () => { voice.qi = 0; voice.phase = "ask"; render(); voiceAsk("voice_q_" + VOICE_QS[0].id); });
+  voicePlay(`${base}/static/audio/${lang}/voice_intro.mp3`, () => {});
+}
+function voiceBegin() {
+  if (voice.qi >= 0) return;
+  voice.qi = 0; voice.phase = "ask"; render(); voiceAsk("voice_q_" + VOICE_QS[0].id);
 }
 
 function currentQuestion() {
@@ -670,7 +688,7 @@ function currentQuestion() {
 async function voiceTalk() {
   const q = currentQuestion();
   if (rec.state === "recording") { rec.recorder.stop(); voice.phase = "working"; render(); return; }
-  voice.error = ""; voice.phase = "recording";
+  voice.error = ""; voice.phase = "recording"; render();
   await toggleRecording(async (text) => {
     if (!text) { voice.error = t("voice_no_sound"); voice.phase = "ask"; render(); voiceSay(t("voice_no_sound")); return; }
     voice.transcript = text;
@@ -696,6 +714,8 @@ async function voiceTalk() {
       voiceSay(voice.readback);
     } catch (e) { console.error(e); voice.error = t("speak_error"); voice.phase = "ask"; render(); }
   });
+  // The microphone may have been refused: fall back to the ask screen with the reason.
+  if (rec.state !== "recording") { voice.phase = "ask"; voice.error = rec.error || ""; }
   render();
 }
 
@@ -733,7 +753,7 @@ function voiceRepeat() { stopSpeaking(); voice.phase = "ask"; voice.transcript =
 function renderVoice() {
   const total = VOICE_QS.length;
   const dots = `<div class="step-dots" aria-hidden="true">${VOICE_QS.map((_, i) => `<span class="${i <= voice.qi ? "on" : ""}"></span>`).join("")}</div>`;
-  if (voice.phase === "intro") return `<div class="voice"><p class="q">${t("voice_intro")}</p><p class="muted">🔊</p></div>`;
+  if (voice.phase === "intro") return `<div class="voice"><p class="q">${t("voice_intro")}</p><button type="button" class="btn btn-primary big" data-action="voice-begin">▶️ ${t("start")}</button></div>`;
   if (voice.phase === "summary") {
     return `<div class="voice">${dots}<p class="q">${t("voice_summary_intro")}</p>
       <div class="transcript">${["who", "home", "mail", "adults", "children", "other", "notes"].map((id) => `<p>${esc(readbackFor({ id }))}</p>`).join("")}</div>
@@ -757,6 +777,9 @@ function renderVoice() {
   }
   return body + "</div>";
 }
+
+// Debug hook for tests: read-only view of internal state.
+window.__tcc = { get rec() { return { state: rec.state, error: rec.error }; }, get voice() { return voice; }, get view() { return view; }, get state() { return state; } };
 
 // ---------- boot ----------
 (async function boot() {
