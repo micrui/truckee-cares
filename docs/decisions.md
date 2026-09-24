@@ -64,3 +64,11 @@ offline, no third party involved when someone taps play. Only dynamic text (help
 answers, the confirmation code) uses the Worker's /api/tts at runtime, with the device
 voice as fallback. OpenAI over ElevenLabs and Google because one plain REST call covers
 both paths, quality is close, and the whole form costs cents to render.
+
+## 2026-09-24 A microphone button in the form, not the keyboard's dictation key
+
+"Tap the microphone on your keyboard" assumes the person knows that key exists and that
+their keyboard has one. The form now records with the browser's own recorder, sends the
+clip to the Worker, which transcribes it with OpenAI (gpt-4o-mini-transcribe, language
+pinned to the form's language), and then runs the same free-form fill. The transcript
+stays visible and editable. Ninety-second cap per recording. Nothing is stored.

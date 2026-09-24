@@ -169,7 +169,10 @@ function renderStep() {
       <div class="card"><h2>${t("phone_path_title")}</h2><p>${t("phone_path_text")}</p>
         <p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help")}</a><a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">🟢 ${t("whatsapp")}</a><a class="btn btn-ghost" href="tel:${config.help_phone}">📞 ${t("call")}</a></p></div>
       ${assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
-        <div class="field"><textarea id="freeform" rows="5" placeholder="${esc(t("freeform_placeholder"))}" ${freeform.busy ? "disabled" : ""}>${esc(freeform.text)}</textarea></div>
+        ${sttEnabled() ? `<button type="button" class="btn btn-big ${rec.state === "recording" ? "btn-secondary recording" : "btn-primary"}" data-action="record" ${rec.state === "transcribing" || freeform.busy ? "disabled" : ""}>
+          ${rec.state === "recording" ? "⏺ " + t("speak_stop") : rec.state === "transcribing" ? t("speak_transcribing") : "🎤 " + t("speak_start")}</button>
+          ${rec.error ? `<p class="error">${esc(rec.error)}</p>` : ""}` : ""}
+        <div class="field" style="margin-top:12px"><textarea id="freeform" rows="5" placeholder="${esc(t("freeform_placeholder"))}" ${freeform.busy ? "disabled" : ""}>${esc(freeform.text)}</textarea></div>
         ${freeform.error ? `<p class="error">${t("freeform_error")}</p>` : ""}
         ${freeform.missing ? `<p class="why">${t("freeform_done")}${freeform.missing.length ? ` <strong>${t("freeform_missing")}</strong> ${esc(freeform.missing.join(", "))}` : ""}</p>` : ""}
         <button type="button" class="btn btn-secondary btn-big" data-action="freeform" ${freeform.busy ? "disabled" : ""}>${freeform.busy ? t("freeform_working") : t("freeform_go")}</button></div>` : ""}
@@ -320,6 +323,8 @@ let audioManifest = { files: {} };   // site/static/audio/manifest.json, pre-ren
 let player = null;                    // the one <audio> element in use
 const ttsEnabled = () => !!(config && config.tts);
 let freeform = { text: "", busy: false, error: false, missing: null, summary: "" };
+let rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };  // idle | recording | transcribing
+const sttEnabled = () => !!(config && config.stt) && !!navigator.mediaDevices?.getUserMedia && "MediaRecorder" in window;
 const assistEnabled = () => !!(config && config.assist);
 
 // Read the current screen aloud. Pre-rendered audio (a real voice, rendered at build
@@ -398,6 +403,7 @@ root.addEventListener("click", async (ev) => {
   if (a === "speak-text") { speakText(assist.history[+el.dataset.i]?.content || ""); return; }
   if (a === "assist-toggle") { readInputs(); assist.open = !assist.open; render(); if (assist.open) root.querySelector("#assist-q")?.focus(); return; }
   if (a === "freeform") { const ta = root.querySelector("#freeform"); freeform.text = ta ? ta.value : ""; await runFreeform(); return; }
+  if (a === "record") { await toggleRecording(); return; }
   if (a === "lang") { readInputs(); setLang(el.dataset.lang); return; }
   readInputs();
   if (a === "next") { errors = validate(STEPS[step]); if (Object.keys(errors).length) return render(); step = Math.min(step + 1, STEPS.length - 1); }
@@ -428,6 +434,46 @@ root.addEventListener("submit", async (ev) => {
   } catch (e) { assist.error = true; }
   assist.busy = false; render(); root.querySelector("#assist-q")?.focus();
 });
+
+// Record with the browser's own recorder, transcribe on the server, then fill the form.
+function pickMime() {
+  for (const m of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]) if (MediaRecorder.isTypeSupported(m)) return m;
+  return "";
+}
+async function toggleRecording() {
+  if (rec.state === "recording") { rec.recorder.stop(); return; }
+  rec.error = "";
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { rec.error = t("mic_denied"); render(); return; }
+  const mime = pickMime();
+  const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  rec = { state: "recording", recorder, chunks: [], stream, error: "" };
+  recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
+  recorder.onstop = async () => {
+    stream.getTracks().forEach((tr) => tr.stop());
+    const blob = new Blob(rec.chunks, { type: recorder.mimeType || "audio/webm" });
+    rec.state = "transcribing"; render();
+    try {
+      const ext = /mp4/.test(blob.type) ? "m4a" : /ogg/.test(blob.type) ? "ogg" : "webm";
+      const fd = new FormData(); fd.append("file", blob, `speech.${ext}`); fd.append("lang", lang);
+      const r = await fetch(`${config.api_base}/api/transcribe`, { method: "POST", body: fd });
+      if (!r.ok) throw new Error(r.status);
+      const { text } = await r.json();
+      if (!text) throw new Error("empty");
+      const ta = root.querySelector("#freeform");
+      freeform.text = ((ta ? ta.value : freeform.text).trim() + " " + text).trim();
+      rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };
+      await runFreeform();
+      return;
+    } catch (e) { console.error(e); rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("speak_error") }; }
+    render();
+  };
+  recorder.start();
+  render();
+  // Safety stop at 90 seconds so a forgotten recording does not run forever.
+  setTimeout(() => { if (rec.recorder === recorder && recorder.state === "recording") recorder.stop(); }, 90000);
+}
 
 async function runFreeform() {
   if (freeform.text.trim().length < 10 || freeform.busy) return;
@@ -506,7 +552,7 @@ async function submit() {
   gate = computeGate();
   const preview = new URLSearchParams(location.search).has("preview");
   previewMode = preview;
-  try { const r = await fetch(`${config.api_base}/api/status`, { cache: "no-store" }); if (r.ok) { const s = await r.json(); config.assist = !!s.assist; config.tts = !!s.tts; if (typeof s.open === "boolean" && !preview) gate = s.open ? { open: true } : { open: false, reason: s.reason || gate.reason || "closed" }; } } catch (e) {}
+  try { const r = await fetch(`${config.api_base}/api/status`, { cache: "no-store" }); if (r.ok) { const s = await r.json(); config.assist = !!s.assist; config.tts = !!s.tts; config.stt = !!s.stt; if (typeof s.open === "boolean" && !preview) gate = s.open ? { open: true } : { open: false, reason: s.reason || gate.reason || "closed" }; } } catch (e) {}
   if (preview) gate = { open: true, reason: null };
   loadDraft();
   if (location.hash.startsWith("#invite=")) {

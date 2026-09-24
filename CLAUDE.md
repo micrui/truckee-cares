@@ -31,6 +31,7 @@ anything that could hurt them.** Every change is judged against that first.
    Speech: OpenAI gpt-4o-mini-tts, voice nova. Static screens are pre-rendered by
    bin/build-audio.mjs (commit the MP3s; rerun after text changes); only dynamic text
    (help answers) goes through worker/src/tts.js at runtime. Device speech is the fallback.
+   Speech in: worker/src/stt.js (gpt-4o-mini-transcribe) behind the form's microphone button.
 8. Tests must pass before a push: `npm run test:worker` and `pytest -q tests`.
 9. Keep it legible. Server-rendered HTML in the console, vanilla JS in the form, one
    Python module per concern in review/. Prefer a longer plain function over a clever one.
