@@ -272,12 +272,13 @@ function render() {
   const total = STEPS.length - 1; // welcome is step 0, not counted
   const pct = Math.round((step / total) * 100);
   const canSpeak = ("speechSynthesis" in window) || Object.keys(audioManifest.files).length > 0;
+  const hb = (icon, label) => `<span class="ico" aria-hidden="true">${icon}</span><span>${label}</span>`;
   const helpBar = `<div class="help-bar">
-    ${canSpeak ? `<button type="button" class="btn btn-ghost" data-action="speak" aria-pressed="${speaking}">${speaking ? "⏹ " + t("stop_reading") : "🔊 " + t("read_aloud")}</button>` : ""}
-    ${assistEnabled() ? `<button type="button" class="btn btn-help" data-action="assist-toggle" aria-expanded="${assist.open}">❓ ${t("assist_title")}</button>` : ""}
-    <a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help")}</a>
-    <a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">🟢 ${t("whatsapp")}</a>
-    <a class="btn btn-ghost" href="tel:${config.help_phone}">📞 ${t("call")}</a></div>`;
+    ${canSpeak ? `<button type="button" class="btn btn-ghost" data-action="speak" aria-pressed="${speaking}">${speaking ? hb("⏹", t("stop_reading")) : hb("🔊", t("read_aloud"))}</button>` : ""}
+    ${assistEnabled() ? `<button type="button" class="btn btn-help" data-action="assist-toggle" aria-expanded="${assist.open}">${hb("❓", t("assist_title"))}</button>` : ""}
+    <a class="btn btn-help" href="sms:${config.help_phone}">${hb("💬", t("help"))}</a>
+    <a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">${hb("🟢", t("whatsapp"))}</a>
+    <a class="btn btn-ghost" href="tel:${config.help_phone}">${hb("📞", t("call"))}</a></div>`;
   const top = `<div class="apply-top"><a class="brand" href="${base}/${lang}/" aria-label="Truckee Community Cares"><img src="${base}/static/favicon.svg" alt="" width="36" height="36"><span class="brand-text">Truckee Community Cares</span></a>
     <div class="lang-toggle" role="group" aria-label="Language"><button type="button" data-action="lang" data-lang="en" aria-pressed="${lang === "en"}">English</button><button type="button" data-action="lang" data-lang="es" aria-pressed="${lang === "es"}">Español</button></div></div>`;
   let body;
@@ -333,11 +334,11 @@ function stopSpeaking() {
   if (player) { player.pause(); player = null; }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   speaking = false;
-  const b = root.querySelector('[data-action="speak"]'); if (b) { b.textContent = "🔊 " + t("read_aloud"); b.setAttribute("aria-pressed", "false"); }
+  const b = root.querySelector('[data-action="speak"]'); if (b) { b.innerHTML = `<span class="ico" aria-hidden="true">🔊</span><span>${esc(t("read_aloud"))}</span>`; b.setAttribute("aria-pressed", "false"); }
 }
 function markSpeaking() {
   speaking = true;
-  const b = root.querySelector('[data-action="speak"]'); if (b) { b.textContent = "⏹ " + t("stop_reading"); b.setAttribute("aria-pressed", "true"); }
+  const b = root.querySelector('[data-action="speak"]'); if (b) { b.innerHTML = `<span class="ico" aria-hidden="true">⏹</span><span>${esc(t("stop_reading"))}</span>`; b.setAttribute("aria-pressed", "true"); }
 }
 function playUrl(url, onend) {
   player = new Audio(url);
