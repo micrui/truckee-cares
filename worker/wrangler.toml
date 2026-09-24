@@ -8,7 +8,7 @@ workers_dev = true
 [[d1_databases]]
 binding = "DB"
 database_name = "truckee-cares"
-database_id = "REPLACE_AFTER_wrangler_d1_create"
+database_id = "c1f6b331-5db4-4917-a50b-4ba1b130e289"
 
 # Per-IP rate limit. Nothing is stored by us; Cloudflare counts in memory.
 [[unsafe.bindings]]

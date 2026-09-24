@@ -86,3 +86,15 @@ test("admin endpoints need the token and support list, patch, purge", async () =
   const d = await (await handle(req("DELETE", "/api/admin/season/2026", { headers: { ...auth, "x-confirm": "2026" } }), e)).json();
   assert.equal(d.deleted, 1);
 });
+
+test("preview season bypasses the date gate and is tagged", async () => {
+  const e = env();
+  const closedTime = Date.parse("2026-01-01T00:00:00Z");
+  const r = await handle(req("POST", "/api/apply", { body: { season: "preview", lang: "en", ciphertext: CT } }), e, closedTime);
+  assert.equal(r.status, 201);
+  const { id } = await r.json();
+  assert.match(id, /^TCC-PV-/);
+  assert.equal(e.DB.rows.get(id).season, "preview");
+  const real = await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "en", ciphertext: CT } }), e, closedTime);
+  assert.equal(real.status, 403);
+});

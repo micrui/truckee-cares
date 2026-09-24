@@ -13,6 +13,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { STRINGS } from "../site/static/js/apply-strings.js";
+const season = JSON.parse(readFileSync(new URL("../config/season.json", import.meta.url), "utf8"));
+
+// The opening date, spoken the way the screen shows it.
+function opensDate(lang) {
+  return new Date(season.opens + "Z").toLocaleDateString(lang === "es" ? "es-MX" : "en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+}
 
 export const MODEL = "gpt-4o-mini-tts";
 export const VOICES = { en: "nova", es: "nova" };
@@ -27,7 +33,7 @@ export function narration(lang) {
   const s = STRINGS[lang];
   const opt = ` ${s.optional}`;
   return {
-    welcome: [s.welcome_title, s.welcome_intro, s.welcome_time, s.welcome_rules_title, ...s.welcome_rules, s.phone_path_title, s.phone_path_text],
+    welcome: [s.welcome_title, s.welcome_intro, s.welcome_time, s.welcome_rules_title, ...s.welcome_rules, s.phone_path_title, s.phone_path_text, s.freeform_title, s.freeform_text],
     you: [s.you_title, s.helper_q, s.helper_hint, s.you_why, s.first_name, s.last_name, s.phone, s.phone_hint, s.can_text, s.other_phone + opt, s.email + opt, s.other_adult + opt, s.other_adult_hint, s.contact_lang],
     home: [s.home_title, s.home_why, s.street, s.street_hint, s.unit + opt, s.city, s.zip, s.mail_same, s.mail_why],
     household: [s.household_title, s.adults, s.adult_coats, s.adult_coat_hint],
@@ -35,7 +41,7 @@ export function narration(lang) {
     programs: [s.programs_title, s.want_food, s.want_toys, s.want_coats, s.referral + opt, s.referral_hint, s.notes + opt],
     review: [s.review_title, s.review_text, s.consent_area, s.consent_one, s.consent_true, s.remember, s.remember_hint, s.review_privacy],
     done: [s.done_title, s.done_code, s.done_text, s.done_limited],
-    not_open: [s.not_open_title],
+    not_open: [s.not_open_title, s.not_open_text(opensDate(lang))],
     closed: [s.closed_title, s.closed_text],
   };
 }

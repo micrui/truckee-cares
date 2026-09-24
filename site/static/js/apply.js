@@ -22,6 +22,7 @@ let state = blankState();
 let errors = {};
 let gate = { open: true, reason: null };
 let prefilled = false;
+let previewMode = false;   // ?preview: always open, submissions go to the "preview" season
 
 function blankState() {
   return {
@@ -292,7 +293,8 @@ function render() {
     <p class="muted">${t("assist_intro")}</p>
     <div class="assist-log">${assist.history.map((m, i) => `<p class="${m.role}"><strong>${m.role === "user" ? "🙂" : "🤝"}</strong> ${esc(m.content)}${m.role === "assistant" ? ` <button type="button" class="speak-inline" data-action="speak-text" data-i="${i}" aria-label="${esc(t("read_aloud"))}">🔊</button>` : ""}</p>`).join("")}${assist.busy ? `<p class="muted">${t("assist_thinking")}</p>` : ""}${assist.error ? `<p class="error">${t("assist_error")}</p>` : ""}</div>
     <form data-action="assist-ask" class="assist-form"><input id="assist-q" type="text" placeholder="${esc(t("assist_placeholder"))}" maxlength="500" autocomplete="off" ${assist.busy ? "disabled" : ""}><button class="btn btn-primary" ${assist.busy ? "disabled" : ""}>${t("assist_send")}</button></form></section>` : "";
-  root.innerHTML = top + body + panel + helpBar;
+  const banner = previewMode ? `<div class="announcement" role="status">${lang === "es" ? "MODO DE PRUEBA. Esta solicitud no cuenta. Las solicitudes reales abren el " : "PREVIEW MODE. This application does not count. Real applications open "}${esc(fmtDate(localToUtc(config.opens, config.timezone)))}.</div>` : "";
+  root.innerHTML = top + banner + body + panel + helpBar;
   window.scrollTo(0, 0);
   const firstErr = root.querySelector(".invalid input, .invalid select, [role=alert]");
   if (firstErr && Object.keys(errors).length) firstErr.focus?.();
@@ -360,10 +362,20 @@ function speakPage() {
   const name = `${lang}/${key}`;
   const stepEl = root.querySelector(".step, .done, .closed");
   const domText = stepEl ? [...stepEl.querySelectorAll("h1, h2, p, li, label, legend, .hint, dt, dd")].map((n) => n.textContent.trim()).filter(Boolean).join(". ") : "";
-  // Dynamic tail: the confirmation code letter by letter, or the not-open date.
-  const tail = view === "done" ? doneId.split("").join(" ") : (key === "not_open" ? domText : "");
-  if (audioManifest.files[name]) playUrl(`${base}/static/audio/${name}.mp3`, tail ? () => synthSpeak(tail) : null);
+  // Only the confirmation code is dynamic: spoken after the recording, letter by letter.
+  const tail = view === "done" ? doneId.split("").join(" ") : "";
+  if (audioManifest.files[name]) playUrl(`${base}/static/audio/${name}.mp3`, tail ? () => speakTail(tail) : null);
   else synthSpeak(domText);
+}
+// Dynamic text after a recording: server voice when the API has it, else the device voice.
+async function speakTail(text) {
+  if (ttsEnabled()) {
+    try {
+      const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text }) });
+      if (r.ok) { playUrl(URL.createObjectURL(await r.blob())); return; }
+    } catch (e) { /* fall through */ }
+  }
+  synthSpeak(text);
 }
 // Speak a piece of dynamic text (a help answer) with the server voice, else the device voice.
 async function speakText(text) {
@@ -451,7 +463,7 @@ root.addEventListener("change", (ev) => {
 function payload() {
   const cityName = state.city === "other" ? state.city_other : state.city;
   return {
-    version: 1, season: config.season, lang, submitted_at: new Date().toISOString(),
+    version: 1, season: previewMode ? "preview" : config.season, lang, submitted_at: new Date().toISOString(),
     helper: state.helper === "yes" ? { name: state.helper_name.trim(), phone: digits(state.helper_phone), org: state.helper_org.trim() } : null,
     applicant: { first_name: state.first_name.trim(), last_name: state.last_name.trim(), phone: digits(state.phone), can_text: state.can_text === "yes",
       other_phone: digits(state.other_phone), email: state.email.trim(), other_adult: state.other_adult.trim(), contact_lang: state.contact_lang },
@@ -473,7 +485,7 @@ async function submit() {
     for (const r of config.recipients) enc.addRecipient(r);
     const ciphertext = armor.encode(await enc.encrypt(JSON.stringify(payload())));
     const res = await fetch(`${config.api_base}/api/apply`, { method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ season: config.season, lang, ciphertext }) });
+      body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext }) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     doneId = data.id;
@@ -492,6 +504,7 @@ async function submit() {
   try { const m = await fetch(`${base}/static/audio/manifest.json`, { cache: "no-store" }); if (m.ok) audioManifest = await m.json(); } catch (e) {}
   gate = computeGate();
   const preview = new URLSearchParams(location.search).has("preview");
+  previewMode = preview;
   try { const r = await fetch(`${config.api_base}/api/status`, { cache: "no-store" }); if (r.ok) { const s = await r.json(); config.assist = !!s.assist; config.tts = !!s.tts; if (typeof s.open === "boolean" && !preview) gate = s.open ? { open: true } : { open: false, reason: s.reason || gate.reason || "closed" }; } } catch (e) {}
   if (preview) gate = { open: true, reason: null };
   loadDraft();

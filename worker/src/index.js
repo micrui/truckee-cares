@@ -38,11 +38,14 @@ export function gate(now = Date.now(), cfg = season) {
   return { open: true, reason: null };
 }
 
+export const PREVIEW_SEASON = "preview";
+
 export function makeId(seasonId, rand = crypto.getRandomValues.bind(crypto)) {
   const bytes = rand(new Uint8Array(5));
   let s = "";
   for (const b of bytes) s += ALPHABET[b % ALPHABET.length];
-  return `TCC-${String(seasonId).slice(-2)}-${s}`;
+  const tag = seasonId === PREVIEW_SEASON ? "PV" : String(seasonId).slice(-2);
+  return `TCC-${tag}-${s}`;
 }
 
 function json(data, status = 200, headers = {}) {
@@ -89,21 +92,26 @@ export async function handle(req, env, now = Date.now()) {
       const { success } = await env.RATE.limit({ key: ip });
       if (!success) return json({ error: "rate_limited" }, 429, cors);
     }
-    const g = gate(now);
-    if (!g.open) return json({ error: g.reason }, 403, cors);
     let body;
     try { body = await req.json(); } catch { return json({ error: "bad_json" }, 400, cors); }
     const { ciphertext, lang } = body || {};
     if (typeof ciphertext !== "string" || !ciphertext.startsWith("-----BEGIN AGE ENCRYPTED FILE-----") || ciphertext.length > MAX_CIPHERTEXT) {
       return json({ error: "bad_ciphertext" }, 400, cors);
     }
-    if (body.season !== season.season) return json({ error: "wrong_season" }, 400, cors);
+    // The preview season is always open; it exists so the board can test the whole path.
+    const isPreview = body.season === PREVIEW_SEASON;
+    if (!isPreview && body.season !== season.season) return json({ error: "wrong_season" }, 400, cors);
+    if (!isPreview) {
+      const g = gate(now);
+      if (!g.open) return json({ error: g.reason }, 403, cors);
+    }
+    const target = isPreview ? PREVIEW_SEASON : season.season;
     const createdAt = new Date().toISOString();
     for (let attempt = 0; attempt < 5; attempt++) {
-      const id = makeId(season.season);
+      const id = makeId(target);
       try {
         await env.DB.prepare("INSERT INTO submissions (id, season, lang, created_at, ciphertext) VALUES (?1, ?2, ?3, ?4, ?5)")
-          .bind(id, season.season, lang === "es" ? "es" : "en", createdAt, ciphertext).run();
+          .bind(id, target, lang === "es" ? "es" : "en", createdAt, ciphertext).run();
         return json({ id }, 201, cors);
       } catch (e) {
         if (!/UNIQUE|constraint/i.test(String(e))) throw e;

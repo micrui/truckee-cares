@@ -25,6 +25,14 @@
 4. **Site.** Push to `main`. GitHub Pages builds from the Actions workflow. Custom domain:
    write it into `config/cname`, add the DNS record, and push.
 
+## Testing before the season opens
+
+Open the form with `?preview` on the end. It is always open, shows a "preview mode"
+banner, and stores submissions under the `preview` season with codes like `TCC-PV-…`.
+They go through the real path: encrypted, stored, pulled and matched in the review tool
+(`bin/review pull --season preview`, then match and the console). Clear them any time:
+`bin/review purge-server preview` and delete them from the local database.
+
 ## Each season
 
 1. Edit `config/season.json`: `season`, `opens`, `closes`, `mode: pickup`, clear

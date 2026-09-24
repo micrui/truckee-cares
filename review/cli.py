@@ -11,12 +11,13 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="review", description="Truckee Community Cares local review tool")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("import", help="import a JotForm xlsx export from a prior season"); s.add_argument("xlsx"); s.add_argument("--season", required=True); s.add_argument("--status", default="accepted")
-    sub.add_parser("pull", help="fetch and decrypt new web applications")
+    sub.add_parser("pull", help="fetch and decrypt new web applications").add_argument("--season")
     s = sub.add_parser("match", help="run matching for a season"); s.add_argument("--season"); s.add_argument("--no-judge", action="store_true")
     sub.add_parser("push", help="push decision statuses to the server")
     sub.add_parser("console", help="open the local admin console").add_argument("--port", type=int, default=8789)
     sub.add_parser("stats", help="counts by season and status")
-    s = sub.add_parser("purge-server", help="delete a season from the server (after distribution)"); s.add_argument("season")
+    s = sub.add_parser("purge-server", help="delete a season from the server (after distribution, or 'preview')"); s.add_argument("season")
+    s = sub.add_parser("purge-local", help="delete a season's applications from the local database"); s.add_argument("season")
     a = p.parse_args(argv)
     con = connect()
     if a.cmd == "import":
@@ -24,7 +25,7 @@ def main(argv=None):
         n, d = import_xlsx(a.xlsx, a.season, a.status, con); print(f"imported {n} (skipped {d} already present)")
     elif a.cmd == "pull":
         from .sync import pull
-        print(f"pulled {pull(con)} new applications")
+        print(f"pulled {pull(con, season=a.season)} new applications")
     elif a.cmd == "match":
         from .match import run_matching
         from .sync import load_config
@@ -45,6 +46,13 @@ def main(argv=None):
         if input(f"Type the season ({a.season}) to delete every server row: ") != a.season:
             sys.exit("aborted")
         print(purge_server(a.season)); log(con, "purge_server", a.season); con.commit()
+    elif a.cmd == "purge-local":
+        ids = [r[0] for r in con.execute("SELECT id FROM applications WHERE season=?", (a.season,))]
+        for t in ("tasks", "candidates"):
+            col = "app_id" if t == "tasks" else "app_a"
+            con.execute(f"DELETE FROM {t} WHERE {col} IN (SELECT id FROM applications WHERE season=?)" + (" OR app_b IN (SELECT id FROM applications WHERE season=?)" if t == "candidates" else ""), (a.season,) * (2 if t == "candidates" else 1))
+        con.execute("DELETE FROM applications WHERE season=?", (a.season,)); con.commit()
+        print(f"deleted {len(ids)} local applications for {a.season}")
 
 
 if __name__ == "__main__":

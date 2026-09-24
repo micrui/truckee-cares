@@ -2,9 +2,9 @@
   "model": "gpt-4o-mini-tts",
   "files": {
     "en/welcome": {
-      "hash": "452be587bd97cfd8",
-      "chars": 620,
-      "rendered": "2026-09-24T19:30:10.185Z"
+      "hash": "7ab1dab36dd5d76e",
+      "chars": 827,
+      "rendered": "2026-09-24T19:38:01.877Z"
     },
     "en/you": {
       "hash": "cc6c7e801c36ba92",
@@ -42,9 +42,9 @@
       "rendered": "2026-09-24T19:30:39.819Z"
     },
     "en/not_open": {
-      "hash": "dd7578aed9218029",
-      "chars": 29,
-      "rendered": "2026-09-24T19:30:40.735Z"
+      "hash": "5fbd5b64256b8135",
+      "chars": 79,
+      "rendered": "2026-09-24T19:38:04.131Z"
     },
     "en/closed": {
       "hash": "7b20bebce761a291",
@@ -52,9 +52,9 @@
       "rendered": "2026-09-24T19:30:42.789Z"
     },
     "es/welcome": {
-      "hash": "5da27f6a9ff182c3",
-      "chars": 640,
-      "rendered": "2026-09-24T19:30:50.141Z"
+      "hash": "9b25197e8dd80a50",
+      "chars": 873,
+      "rendered": "2026-09-24T19:38:14.126Z"
     },
     "es/you": {
       "hash": "c622c77a381ea02f",
@@ -92,9 +92,9 @@
       "rendered": "2026-09-24T19:31:19.829Z"
     },
     "es/not_open": {
-      "hash": "46accf1eedf2123f",
-      "chars": 32,
-      "rendered": "2026-09-24T19:31:20.861Z"
+      "hash": "3abe82a5bdd08aee",
+      "chars": 89,
+      "rendered": "2026-09-24T19:38:15.759Z"
     },
     "es/closed": {
       "hash": "2e7200a268fea75b",
