@@ -72,3 +72,13 @@ their keyboard has one. The form now records with the browser's own recorder, se
 clip to the Worker, which transcribes it with OpenAI (gpt-4o-mini-transcribe, language
 pinned to the form's language), and then runs the same free-form fill. The transcript
 stays visible and editable. Ninety-second cap per recording. Nothing is stored.
+
+## 2026-09-24 Voice-first mode and a listening overlay
+
+The microphone box still left a non-reader with six screens to read. Voice mode asks
+seven recorded questions, transcribes each answer, reads it back in the same voice, and
+sends with one tap after reading the consents aloud. While the microphone is open, a
+full-screen sheet shows a live level meter, a countdown, and one big Done button, so a
+person knows the phone is listening and when it is not (three quiet seconds show a hint
+to come closer). Playback failures never block the flow: every step advances on end,
+error, or blocked autoplay. Verified end to end with synthesized Spanish answers.

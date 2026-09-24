@@ -480,13 +480,98 @@ root.addEventListener("submit", async (ev) => {
   assist.busy = false; render(); root.querySelector("#assist-q")?.focus();
 });
 
+
+// ---------- Recording overlay ----------
+// While the microphone is open, a full-screen sheet shows a live level meter, a
+// countdown, and one big Done button, so a person knows the phone is listening.
+const REC_LIMIT_MS = 90000;
+let overlay = { el: null, raf: 0, timer: 0, ctx: null, analyser: null, quietSince: 0, startedAt: 0, prompt: "" };
+
+function openOverlay(stream, prompt) {
+  closeOverlay();
+  const el = document.createElement("div");
+  el.className = "rec-overlay"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true"); el.setAttribute("aria-label", t("rec_listening"));
+  el.innerHTML = `<div class="rec-sheet">
+    <p class="rec-title" aria-live="polite">🎤 ${t("rec_listening")}</p>
+    ${prompt ? `<p class="rec-prompt">${esc(prompt)}</p>` : ""}
+    <canvas class="rec-meter" width="320" height="110" aria-hidden="true"></canvas>
+    <p class="rec-hint">${t("rec_hint")}</p>
+    <p class="rec-time"><span class="rec-clock">0:00</span><span class="rec-left"></span></p>
+    <button type="button" class="btn btn-primary rec-done">✅ ${t("rec_done")}</button>
+    <button type="button" class="btn btn-ghost rec-cancel">✖ ${t("rec_cancel")}</button></div>`;
+  document.body.appendChild(el);
+  document.body.classList.add("rec-open");
+  el.querySelector(".rec-done").addEventListener("click", () => { if (rec.state === "recording") { showProcessing(); rec.recorder.stop(); } });
+  el.querySelector(".rec-cancel").addEventListener("click", () => { if (rec.state === "recording") { rec.cancelled = true; rec.recorder.stop(); } closeOverlay(); });
+  overlay = { ...overlay, el, startedAt: performance.now(), quietSince: 0, prompt };
+  el.querySelector(".rec-done").focus();
+  startMeter(stream, el.querySelector(".rec-meter"));
+  const clock = el.querySelector(".rec-clock"), left = el.querySelector(".rec-left"), hint = el.querySelector(".rec-hint");
+  overlay.timer = setInterval(() => {
+    const ms = performance.now() - overlay.startedAt;
+    const sec = Math.floor(ms / 1000);
+    clock.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+    const remaining = Math.max(0, Math.ceil((REC_LIMIT_MS - ms) / 1000));
+    left.textContent = remaining <= 20 ? " · " + t("rec_limit", remaining) : "";
+    if (overlay.quietSince && performance.now() - overlay.quietSince > 3500) { hint.textContent = t("rec_quiet"); hint.classList.add("error"); }
+    else { hint.textContent = t("rec_hint"); hint.classList.remove("error"); }
+  }, 250);
+}
+function showProcessing() {
+  if (!overlay.el) return;
+  stopMeter();
+  overlay.el.querySelector(".rec-sheet").innerHTML = `<p class="rec-title">${t("rec_processing")}</p><div class="rec-spinner" aria-hidden="true"></div>`;
+}
+function closeOverlay() {
+  stopMeter();
+  clearInterval(overlay.timer); overlay.timer = 0;
+  if (overlay.el) { overlay.el.remove(); overlay.el = null; }
+  document.body.classList.remove("rec-open");
+}
+function startMeter(stream, canvas) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC || !canvas) return;
+  try {
+    const ctx = new AC(); const src = ctx.createMediaStreamSource(stream); const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.6; src.connect(analyser);
+    overlay.ctx = ctx; overlay.analyser = analyser;
+    const data = new Uint8Array(analyser.fftSize); const g = canvas.getContext("2d");
+    const bars = 24; const hist = new Array(bars).fill(0);
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const brand = getComputedStyle(document.documentElement).getPropertyValue("--brand-dark").trim() || "#4d6b53";
+    const draw = () => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0; for (let i = 0; i < data.length; i++) { const v = (data[i] - 128) / 128; sum += v * v; }
+      const rms = Math.sqrt(sum / data.length);
+      const level = Math.min(1, rms * 6);
+      if (level < 0.03) { if (!overlay.quietSince) overlay.quietSince = performance.now(); } else overlay.quietSince = 0;
+      hist.push(level); hist.shift();
+      g.clearRect(0, 0, canvas.width, canvas.height);
+      const w = canvas.width / bars;
+      for (let i = 0; i < bars; i++) {
+        const h = Math.max(4, hist[i] * canvas.height);
+        g.fillStyle = brand; g.globalAlpha = 0.35 + 0.65 * (i / bars);
+        g.fillRect(i * w + 3, (canvas.height - h) / 2, w - 6, h);
+      }
+      g.globalAlpha = 1;
+      overlay.raf = reduce ? setTimeout(draw, 250) : requestAnimationFrame(draw);
+    };
+    draw();
+  } catch (e) { /* no meter, recording still works */ }
+}
+function stopMeter() {
+  if (overlay.raf) { cancelAnimationFrame(overlay.raf); clearTimeout(overlay.raf); overlay.raf = 0; }
+  if (overlay.ctx) { try { overlay.ctx.close(); } catch (e) {} overlay.ctx = null; overlay.analyser = null; }
+}
+
 // Record with the browser's own recorder, transcribe on the server, then fill the form.
 function pickMime() {
   for (const m of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]) if (MediaRecorder.isTypeSupported(m)) return m;
   return "";
 }
 async function toggleRecording(onText) {
-  if (rec.state === "recording") { rec.recorder.stop(); return; }
+  if (rec.state === "recording") { showProcessing(); rec.recorder.stop(); return; }
+  const prompt = rec.prompt || "";
   rec.onText = onText || null;
   rec.error = "";
   let stream;
@@ -494,10 +579,12 @@ async function toggleRecording(onText) {
   catch (e) { rec.error = t("mic_denied"); render(); return; }
   const mime = pickMime();
   const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-  rec = { state: "recording", recorder, chunks: [], stream, error: "", onText: onText || null };
+  rec = { state: "recording", recorder, chunks: [], stream, error: "", onText: onText || null, cancelled: false };
   recorder.ondataavailable = (e) => { if (e.data.size) rec.chunks.push(e.data); };
   recorder.onstop = async () => {
     stream.getTracks().forEach((tr) => tr.stop());
+    if (rec.cancelled) { const cb = rec.onText; rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" }; closeOverlay(); if (cb) { await cb(null); return; } render(); return; }
+    showProcessing();
     const blob = new Blob(rec.chunks, { type: recorder.mimeType || "audio/webm" });
     rec.state = "transcribing"; render();
     try {
@@ -509,6 +596,7 @@ async function toggleRecording(onText) {
       if (!text) throw new Error("empty");
       const cb = rec.onText;
       rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };
+      closeOverlay();
       if (cb) { await cb(text); return; }
       const ta = root.querySelector("#freeform");
       freeform.text = ((ta ? ta.value : freeform.text).trim() + " " + text).trim();
@@ -518,14 +606,17 @@ async function toggleRecording(onText) {
       console.error(e);
       const cb = rec.onText;
       rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("speak_error") };
+      closeOverlay();
       if (cb) { await cb(""); return; }
     }
     render();
   };
   recorder.start();
+  rec.prompt = prompt;
+  openOverlay(stream, prompt);
   render();
-  // Safety stop at 90 seconds so a forgotten recording does not run forever.
-  setTimeout(() => { if (rec.recorder === recorder && recorder.state === "recording") recorder.stop(); }, 90000);
+  // Safety stop at the limit so a forgotten recording does not run forever.
+  setTimeout(() => { if (rec.recorder === recorder && recorder.state === "recording") { showProcessing(); recorder.stop(); } }, REC_LIMIT_MS);
 }
 
 // People say sizes in words, in either language. Map them to the size chips.
@@ -689,7 +780,9 @@ async function voiceTalk() {
   const q = currentQuestion();
   if (rec.state === "recording") { rec.recorder.stop(); voice.phase = "working"; render(); return; }
   voice.error = ""; voice.phase = "recording"; render();
+  rec.prompt = q.text;
   await toggleRecording(async (text) => {
+    if (text === null) { voice.phase = "ask"; render(); return; }  // cancelled
     if (!text) { voice.error = t("voice_no_sound"); voice.phase = "ask"; render(); voiceSay(t("voice_no_sound")); return; }
     voice.transcript = text;
     try {
