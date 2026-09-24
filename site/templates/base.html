@@ -7,7 +7,7 @@
 <meta name="description" content="{{ s.tagline }}">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="{% block robots %}index,follow{% endblock %}">
-<link rel="stylesheet" href="{{ base }}/static/css/site.css">
+<link rel="stylesheet" href="{{ base }}/static/css/site.css?v={{ asset_v }}">
 <link rel="icon" href="{{ base }}/static/favicon.svg" type="image/svg+xml">
 {% if other_path is defined %}<link rel="alternate" hreflang="{{ other_lang }}" href="{{ other_path }}">{% endif %}
 </head>

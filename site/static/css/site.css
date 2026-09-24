@@ -108,7 +108,7 @@ legend { font-weight: 700; margin-bottom: 6px; padding: 0; }
 .done { text-align: center; padding: 24px 0; }
 .done .code { font-size: 2rem; font-weight: 800; letter-spacing: 2px; background: var(--card); display: inline-block; padding: 12px 20px; border-radius: var(--radius); margin: 12px 0; }
 .help-bar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 8px 0; margin-top: 24px; display: flex; gap: 6px; justify-content: center; }
-.help-bar .btn { min-height: 48px; flex: 1; padding: 6px 4px; font-size: 0.9rem; border-radius: 10px; flex-direction: column; gap: 2px; line-height: 1.1; }
+.help-bar .btn { min-height: 48px; flex: 1; padding: 6px 2px; font-size: 0.8rem; border-radius: 10px; flex-direction: column; gap: 2px; line-height: 1.1; white-space: nowrap; min-width: 0; }
 .closed { text-align: center; padding: 24px 0; }
 @media (max-width: 400px) { html { font-size: 106%; } .summary dl { grid-template-columns: 1fr; } }
 @media print { .site-header, .site-footer, .help-bar, .nav-row, .lang-toggle { display: none !important; } }

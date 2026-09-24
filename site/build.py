@@ -7,8 +7,10 @@ Output: dist/ with /en/... and /es/... trees, /admin/, config.json, and a root r
 Run: bin/build   (or: .venv/bin/python site/build.py [--base /truckee-cares] [--out dist])
 """
 import argparse
+import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -80,6 +82,16 @@ def build(base_path="", out=ROOT / "dist"):
     out.mkdir(parents=True)
     shutil.copytree(SITE / "static", out / "static")
 
+    # Cache busting. GitHub Pages serves static files with a ten-minute cache; a stale
+    # apply.js next to a fresh apply-strings.js would break the form. Every script URL,
+    # including the module imports inside apply.js, carries a hash of the js directory.
+    h = hashlib.sha256()
+    for f in sorted((SITE / "static" / "js").glob("*.js")) + sorted((SITE / "static" / "css").glob("*.css")):
+        h.update(f.read_bytes())
+    asset_v = h.hexdigest()[:10]
+    apply_js = out / "static" / "js" / "apply.js"
+    apply_js.write_text(re.sub(r'from "\./([a-z-]+\.js)"', rf'from "./\1?v={asset_v}"', apply_js.read_text()))
+
     client_config = {k: config[k] for k in CLIENT_CONFIG_KEYS if k in config}
     client_config["base_path"] = base_path
     client_config["schools"] = schools.get("schools", [])
@@ -100,14 +112,14 @@ def build(base_path="", out=ROOT / "dist"):
             render(
                 template, dest,
                 lang=lang, other_lang=other, slug=slug, base=base_path,
-                s=s, page=content, config=config, client_config=client_config,
+                s=s, page=content, config=config, client_config=client_config, asset_v=asset_v,
                 this_path=f"{base_path}/{lang}/{path}",
                 other_path=f"{base_path}/{other}/{path}",
                 announcement=(config.get("announcement") or {}).get(lang, ""),
             )
 
-    render("redirect.html", "index.html", base=base_path)
-    render("redirect.html", "404.html", base=base_path)
+    render("redirect.html", "index.html", base=base_path, asset_v=asset_v)
+    render("redirect.html", "404.html", base=base_path, asset_v=asset_v)
     (out / ".nojekyll").write_text("")
     if config.get("cname"):
         (out / "CNAME").write_text(config["cname"] + "\n")

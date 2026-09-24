@@ -35,6 +35,25 @@ They go through the real path: encrypted, stored, pulled and matched in the revi
 (`bin/review pull --season preview`, then match and the console). Clear them any time:
 `bin/review purge-server preview` and delete them from the local database.
 
+## A second board member's Mac (Lynette)
+
+The console stays local on purpose: plaintext applications exist only on a board
+member's Mac, never on a server or in a web page. To give a second person the console:
+
+1. On their Mac: install Xcode command line tools if asked, then
+   `git clone https://github.com/micrui/truckee-cares ~/src/truckee-cares && cd ~/src/truckee-cares && npm install && bin/build`.
+2. `node bin/keygen.mjs lynette-2026` makes their own key and adds their public key to
+   `config/season.json`. Commit and push that change, and redeploy the Worker
+   (`npm run worker:deploy`) **before applications open**. From then on every
+   application is encrypted to both keys. Applications submitted before that step can
+   only be opened with the first key.
+3. Copy the admin token to their Mac: `bin/set-secret admin-token` (paste the value from
+   the first Mac's `~/.config/truckee-cares/admin-token`, shared in person or by
+   Apple Passwords, never by text or email).
+4. `bin/review pull && bin/review match && bin/review console`. Their local database is
+   separate; decisions are shared through the Worker's status field, so agree on who
+   decides what.
+
 ## Each season
 
 1. Edit `config/season.json`: `season`, `opens`, `closes`, `mode: pickup`, clear
