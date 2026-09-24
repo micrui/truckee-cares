@@ -1,4 +1,105 @@
 {
   "model": "gpt-4o-mini-tts",
-  "files": {}
+  "files": {
+    "en/welcome": {
+      "hash": "452be587bd97cfd8",
+      "chars": 620,
+      "rendered": "2026-09-24T19:30:10.185Z"
+    },
+    "en/you": {
+      "hash": "cc6c7e801c36ba92",
+      "chars": 486,
+      "rendered": "2026-09-24T19:30:17.253Z"
+    },
+    "en/home": {
+      "hash": "e643eef50f3209f7",
+      "chars": 306,
+      "rendered": "2026-09-24T19:30:21.826Z"
+    },
+    "en/household": {
+      "hash": "bf6e8b73e435c2b9",
+      "chars": 133,
+      "rendered": "2026-09-24T19:30:23.593Z"
+    },
+    "en/children": {
+      "hash": "16ee8b99d51e5be4",
+      "chars": 301,
+      "rendered": "2026-09-24T19:30:28.389Z"
+    },
+    "en/programs": {
+      "hash": "a1802659df59feed",
+      "chars": 209,
+      "rendered": "2026-09-24T19:30:31.953Z"
+    },
+    "en/review": {
+      "hash": "5c487def21c1d0a3",
+      "chars": 347,
+      "rendered": "2026-09-24T19:30:35.815Z"
+    },
+    "en/done": {
+      "hash": "abac1a0d544ceeaa",
+      "chars": 243,
+      "rendered": "2026-09-24T19:30:39.819Z"
+    },
+    "en/not_open": {
+      "hash": "dd7578aed9218029",
+      "chars": 29,
+      "rendered": "2026-09-24T19:30:40.735Z"
+    },
+    "en/closed": {
+      "hash": "7b20bebce761a291",
+      "chars": 91,
+      "rendered": "2026-09-24T19:30:42.789Z"
+    },
+    "es/welcome": {
+      "hash": "5da27f6a9ff182c3",
+      "chars": 640,
+      "rendered": "2026-09-24T19:30:50.141Z"
+    },
+    "es/you": {
+      "hash": "c622c77a381ea02f",
+      "chars": 529,
+      "rendered": "2026-09-24T19:30:57.339Z"
+    },
+    "es/home": {
+      "hash": "d0ef4b71032ae740",
+      "chars": 354,
+      "rendered": "2026-09-24T19:31:01.605Z"
+    },
+    "es/household": {
+      "hash": "a089e16c17335dcd",
+      "chars": 143,
+      "rendered": "2026-09-24T19:31:03.768Z"
+    },
+    "es/children": {
+      "hash": "094dbfab67d9d941",
+      "chars": 340,
+      "rendered": "2026-09-24T19:31:08.322Z"
+    },
+    "es/programs": {
+      "hash": "2dad2ef2f36c1782",
+      "chars": 240,
+      "rendered": "2026-09-24T19:31:11.386Z"
+    },
+    "es/review": {
+      "hash": "85e58337764fcae2",
+      "chars": 379,
+      "rendered": "2026-09-24T19:31:16.128Z"
+    },
+    "es/done": {
+      "hash": "a13ce84489c4aed8",
+      "chars": 301,
+      "rendered": "2026-09-24T19:31:19.829Z"
+    },
+    "es/not_open": {
+      "hash": "46accf1eedf2123f",
+      "chars": 32,
+      "rendered": "2026-09-24T19:31:20.861Z"
+    },
+    "es/closed": {
+      "hash": "2e7200a268fea75b",
+      "chars": 103,
+      "rendered": "2026-09-24T19:31:22.999Z"
+    }
+  }
 }
