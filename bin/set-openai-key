@@ -1,0 +1,9 @@
+#!/bin/bash
+# Stores the OpenAI API key (for text-to-speech) in ~/.config/truckee-cares/openai-key,
+# mode 600, via a macOS dialog so the key never passes through a terminal or a chat.
+set -euo pipefail
+DIR="$HOME/.config/truckee-cares"; mkdir -p "$DIR"; chmod 700 "$DIR"
+KEY=$(osascript -e 'text returned of (display dialog "Paste the OpenAI API key for Truckee Cares text-to-speech:" default answer "" with hidden answer with title "Truckee Cares")' 2>/dev/null || true)
+[ -n "$KEY" ] || { echo "cancelled"; exit 1; }
+umask 077; printf '%s\n' "$KEY" > "$DIR/openai-key"
+echo "stored in $DIR/openai-key (mode 600). Now run: npm run audio"

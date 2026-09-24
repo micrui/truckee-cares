@@ -264,10 +264,10 @@ function renderStep() {
 }
 
 function render() {
-  if (speaking && window.speechSynthesis) { window.speechSynthesis.cancel(); speaking = false; }
+  if (speaking) stopSpeaking();
   const total = STEPS.length - 1; // welcome is step 0, not counted
   const pct = Math.round((step / total) * 100);
-  const canSpeak = "speechSynthesis" in window;
+  const canSpeak = ("speechSynthesis" in window) || Object.keys(audioManifest.files).length > 0;
   const helpBar = `<div class="help-bar">
     ${canSpeak ? `<button type="button" class="btn btn-ghost" data-action="speak" aria-pressed="${speaking}">${speaking ? "⏹ " + t("stop_reading") : "🔊 " + t("read_aloud")}</button>` : ""}
     ${assistEnabled() ? `<button type="button" class="btn btn-help" data-action="assist-toggle" aria-expanded="${assist.open}">❓ ${t("assist_title")}</button>` : ""}
@@ -290,7 +290,7 @@ function render() {
   }
   const panel = assist.open ? `<section class="card assist" aria-label="${esc(t("assist_heading"))}"><h2>${t("assist_heading")} <button type="button" class="btn btn-ghost small" data-action="assist-toggle" style="float:right">${t("assist_close")}</button></h2>
     <p class="muted">${t("assist_intro")}</p>
-    <div class="assist-log">${assist.history.map((m) => `<p class="${m.role}"><strong>${m.role === "user" ? "🙂" : "🤝"}</strong> ${esc(m.content)}</p>`).join("")}${assist.busy ? `<p class="muted">${t("assist_thinking")}</p>` : ""}${assist.error ? `<p class="error">${t("assist_error")}</p>` : ""}</div>
+    <div class="assist-log">${assist.history.map((m, i) => `<p class="${m.role}"><strong>${m.role === "user" ? "🙂" : "🤝"}</strong> ${esc(m.content)}${m.role === "assistant" ? ` <button type="button" class="speak-inline" data-action="speak-text" data-i="${i}" aria-label="${esc(t("read_aloud"))}">🔊</button>` : ""}</p>`).join("")}${assist.busy ? `<p class="muted">${t("assist_thinking")}</p>` : ""}${assist.error ? `<p class="error">${t("assist_error")}</p>` : ""}</div>
     <form data-action="assist-ask" class="assist-form"><input id="assist-q" type="text" placeholder="${esc(t("assist_placeholder"))}" maxlength="500" autocomplete="off" ${assist.busy ? "disabled" : ""}><button class="btn btn-primary" ${assist.busy ? "disabled" : ""}>${t("assist_send")}</button></form></section>` : "";
   root.innerHTML = top + body + panel + helpBar;
   window.scrollTo(0, 0);
@@ -314,23 +314,67 @@ function readInputs() {
 
 let view = "form"; let doneId = ""; let sendError = false; let sending = false; let speaking = false;
 let assist = { open: false, history: [], busy: false, error: false };
+let audioManifest = { files: {} };   // site/static/audio/manifest.json, pre-rendered screens
+let player = null;                    // the one <audio> element in use
+const ttsEnabled = () => !!(config && config.tts);
 let freeform = { text: "", busy: false, error: false, missing: null, summary: "" };
 const assistEnabled = () => !!(config && config.assist);
 
-// Read the current screen aloud with the device's own speech engine. No network, no third party.
-function speakPage() {
-  const synth = window.speechSynthesis; if (!synth) return;
-  if (speaking) { synth.cancel(); speaking = false; render(); return; }
-  const stepEl = root.querySelector(".step, .done, .closed"); if (!stepEl) return;
-  const text = [...stepEl.querySelectorAll("h1, h2, p, li, label, legend, .hint, dt, dd")]
-    .map((n) => n.textContent.trim()).filter(Boolean).join(". ");
+// Read the current screen aloud. Pre-rendered audio (a real voice, rendered at build
+// time by bin/build-audio.mjs) when it exists; otherwise the device's own speech engine.
+function stopSpeaking() {
+  if (player) { player.pause(); player = null; }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  speaking = false;
+  const b = root.querySelector('[data-action="speak"]'); if (b) { b.textContent = "🔊 " + t("read_aloud"); b.setAttribute("aria-pressed", "false"); }
+}
+function markSpeaking() {
+  speaking = true;
+  const b = root.querySelector('[data-action="speak"]'); if (b) { b.textContent = "⏹ " + t("stop_reading"); b.setAttribute("aria-pressed", "true"); }
+}
+function playUrl(url, onend) {
+  player = new Audio(url);
+  player.onended = () => { player = null; if (onend) onend(); else stopSpeaking(); };
+  player.onerror = () => { player = null; stopSpeaking(); };
+  markSpeaking();
+  player.play().catch(() => stopSpeaking());
+}
+function synthSpeak(text, onend) {
+  const synth = window.speechSynthesis; if (!synth || !text) { if (onend) onend(); else stopSpeaking(); return; }
   const u = new SpeechSynthesisUtterance(text);
   u.lang = lang === "es" ? "es-MX" : "en-US"; u.rate = 0.95;
-  const voice = synth.getVoices().find((v) => v.lang.toLowerCase().startsWith(lang === "es" ? "es-mx" : "en-us")) || synth.getVoices().find((v) => v.lang.toLowerCase().startsWith(lang));
+  const voices = synth.getVoices();
+  const voice = voices.find((v) => v.lang.toLowerCase().startsWith(lang === "es" ? "es-mx" : "en-us")) || voices.find((v) => v.lang.toLowerCase().startsWith(lang));
   if (voice) u.voice = voice;
-  u.onend = () => { speaking = false; const b = root.querySelector('[data-action="speak"]'); if (b) { b.textContent = "🔊 " + t("read_aloud"); b.setAttribute("aria-pressed", "false"); } };
-  synth.cancel(); synth.speak(u); speaking = true;
-  const b = root.querySelector('[data-action="speak"]'); if (b) { b.textContent = "⏹ " + t("stop_reading"); b.setAttribute("aria-pressed", "true"); }
+  u.onend = () => { if (onend) onend(); else stopSpeaking(); };
+  markSpeaking(); synth.speak(u);
+}
+function currentScreenKey() {
+  if (view === "done") return "done";
+  if (!gate.open) return gate.reason === "not_open" ? "not_open" : "closed";
+  return STEPS[step];
+}
+function speakPage() {
+  if (speaking) { stopSpeaking(); return; }
+  const key = currentScreenKey();
+  const name = `${lang}/${key}`;
+  const stepEl = root.querySelector(".step, .done, .closed");
+  const domText = stepEl ? [...stepEl.querySelectorAll("h1, h2, p, li, label, legend, .hint, dt, dd")].map((n) => n.textContent.trim()).filter(Boolean).join(". ") : "";
+  // Dynamic tail: the confirmation code letter by letter, or the not-open date.
+  const tail = view === "done" ? doneId.split("").join(" ") : (key === "not_open" ? domText : "");
+  if (audioManifest.files[name]) playUrl(`${base}/static/audio/${name}.mp3`, tail ? () => synthSpeak(tail) : null);
+  else synthSpeak(domText);
+}
+// Speak a piece of dynamic text (a help answer) with the server voice, else the device voice.
+async function speakText(text) {
+  if (speaking) { stopSpeaking(); return; }
+  if (ttsEnabled()) {
+    try {
+      const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text }) });
+      if (r.ok) { playUrl(URL.createObjectURL(await r.blob())); return; }
+    } catch (e) { /* fall through */ }
+  }
+  synthSpeak(text);
 }
 
 root.addEventListener("click", async (ev) => {
@@ -338,6 +382,7 @@ root.addEventListener("click", async (ev) => {
   const a = el.dataset.action;
   if (el.tagName === "A") ev.preventDefault();
   if (a === "speak") { speakPage(); return; }
+  if (a === "speak-text") { speakText(assist.history[+el.dataset.i]?.content || ""); return; }
   if (a === "assist-toggle") { readInputs(); assist.open = !assist.open; render(); if (assist.open) root.querySelector("#assist-q")?.focus(); return; }
   if (a === "freeform") { const ta = root.querySelector("#freeform"); freeform.text = ta ? ta.value : ""; await runFreeform(); return; }
   if (a === "lang") { readInputs(); setLang(el.dataset.lang); return; }
@@ -444,9 +489,10 @@ async function submit() {
 (async function boot() {
   try { const stored = localStorage.getItem(LANG_KEY); if (stored && stored !== lang && STRINGS[stored]) { lang = stored; strings = STRINGS[lang]; document.documentElement.lang = lang; } } catch (e) {}
   config = await (await fetch(`${base}/config.json`, { cache: "no-store" })).json();
+  try { const m = await fetch(`${base}/static/audio/manifest.json`, { cache: "no-store" }); if (m.ok) audioManifest = await m.json(); } catch (e) {}
   gate = computeGate();
   const preview = new URLSearchParams(location.search).has("preview");
-  try { const r = await fetch(`${config.api_base}/api/status`, { cache: "no-store" }); if (r.ok) { const s = await r.json(); config.assist = !!s.assist; if (typeof s.open === "boolean" && !preview) gate = s.open ? { open: true } : { open: false, reason: s.reason || gate.reason || "closed" }; } } catch (e) {}
+  try { const r = await fetch(`${config.api_base}/api/status`, { cache: "no-store" }); if (r.ok) { const s = await r.json(); config.assist = !!s.assist; config.tts = !!s.tts; if (typeof s.open === "boolean" && !preview) gate = s.open ? { open: true } : { open: false, reason: s.reason || gate.reason || "closed" }; } } catch (e) {}
   if (preview) gate = { open: true, reason: null };
   loadDraft();
   if (location.hash.startsWith("#invite=")) {

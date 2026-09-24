@@ -28,6 +28,9 @@ anything that could hurt them.** Every change is judged against that first.
 7. Claude API use: only in worker/src/assist.js (help chat and free-form fill, with the
    person's own words) and review/judge.py (pairs of applications, minimal fields).
    Model claude-opus-5, effort low. Nothing from these calls is stored server-side.
+   Speech: OpenAI gpt-4o-mini-tts, voice nova. Static screens are pre-rendered by
+   bin/build-audio.mjs (commit the MP3s; rerun after text changes); only dynamic text
+   (help answers) goes through worker/src/tts.js at runtime. Device speech is the fallback.
 8. Tests must pass before a push: `npm run test:worker` and `pytest -q tests`.
 9. Keep it legible. Server-rendered HTML in the console, vanilla JS in the form, one
    Python module per concern in review/. Prefer a longer plain function over a clever one.

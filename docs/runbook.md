@@ -17,7 +17,12 @@
    ```
    Put the Worker URL in `config/season.json` as `api_base`. Save the admin token to
    `~/.config/truckee-cares/admin-token` (mode 600).
-3. **Site.** Push to `main`. GitHub Pages builds from the Actions workflow. Custom domain:
+3. **Voice.** `bin/set-openai-key` opens a dialog and stores the OpenAI key in
+   `~/.config/truckee-cares/openai-key`. Then `npm run audio` renders one MP3 per form
+   screen per language into `site/static/audio/` (about 5,600 characters, a few cents).
+   Commit the MP3s. Re-run after changing form text; only changed screens re-render.
+   For spoken help answers, also `npx wrangler secret put OPENAI_API_KEY --config worker/wrangler.toml`.
+4. **Site.** Push to `main`. GitHub Pages builds from the Actions workflow. Custom domain:
    write it into `config/cname`, add the DNS record, and push.
 
 ## Each season

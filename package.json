@@ -6,6 +6,7 @@
   "description": "Truckee Community Cares: static site, encrypted application form, admin, and Cloudflare Worker backend",
   "scripts": {
     "vendor": "node bin/build-vendor.mjs",
+    "audio": "node bin/build-audio.mjs",
     "worker:dev": "wrangler dev --config worker/wrangler.toml",
     "worker:deploy": "wrangler deploy --config worker/wrangler.toml",
     "test:worker": "node --test worker/test/*.test.mjs"

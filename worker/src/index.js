@@ -10,6 +10,7 @@
 // Cloudflare ratelimit binding, which keeps counts in memory only.
 import season from "../../config/season.json" with { type: "json" };
 import { handleHelp, handleExtract } from "./assist.js";
+import { handleTts } from "./tts.js";
 
 const MAX_CIPHERTEXT = 64 * 1024;
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L
@@ -79,7 +80,7 @@ export async function handle(req, env, now = Date.now()) {
 
   if (req.method === "GET" && path === "/api/status") {
     const g = gate(now);
-    return json({ season: season.season, open: g.open, reason: g.reason, opens: season.opens, closes: season.closes, timezone: season.timezone, mode: season.mode, assist: !!env.ANTHROPIC_API_KEY }, 200, cors);
+    return json({ season: season.season, open: g.open, reason: g.reason, opens: season.opens, closes: season.closes, timezone: season.timezone, mode: season.mode, assist: !!env.ANTHROPIC_API_KEY, tts: !!env.OPENAI_API_KEY }, 200, cors);
   }
 
   if (req.method === "POST" && path === "/api/apply") {
@@ -119,6 +120,17 @@ export async function handle(req, env, now = Date.now()) {
     }
     const r = path === "/api/help" ? await handleHelp(req, env, season) : await handleExtract(req, env, season);
     return json(r.data, r.status, cors);
+  }
+
+  if (req.method === "POST" && path === "/api/tts") {
+    if (!env.OPENAI_API_KEY) return json({ error: "tts_disabled" }, 503, cors);
+    if (env.RATE) {
+      const { success } = await env.RATE.limit({ key: "tts:" + (req.headers.get("cf-connecting-ip") || "unknown") });
+      if (!success) return json({ error: "rate_limited" }, 429, cors);
+    }
+    const r = await handleTts(req, env);
+    const h = new Headers(r.headers); for (const [k, v] of Object.entries(cors)) h.set(k, v);
+    return new Response(r.body, { status: r.status, headers: h });
   }
 
   if (path.startsWith("/api/admin/")) {

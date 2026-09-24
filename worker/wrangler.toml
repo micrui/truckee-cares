@@ -23,3 +23,4 @@ ALLOWED_ORIGINS = "https://micrui.github.io,https://www.truckeecommunitycares.co
 # Secrets (set with: npx wrangler secret put ADMIN_TOKEN --config worker/wrangler.toml)
 #   ADMIN_TOKEN        bearer token the review tool uses to list, update and purge
 #   ANTHROPIC_API_KEY  enables /api/help and /api/extract (live help in the form)
+#   OPENAI_API_KEY     enables /api/tts (spoken help answers); same key renders the static audio

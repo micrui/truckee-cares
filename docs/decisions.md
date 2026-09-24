@@ -53,3 +53,14 @@ family's keys automatically.
 
 For people who read little, every screen has a read-aloud button using the browser's
 SpeechSynthesis. It runs on the device and sends nothing anywhere.
+
+## 2026-09-24 Pre-rendered voice, one vendor for static and dynamic speech
+
+The device speech engine on a desktop browser sounded robotic; Mike wants the read-aloud
+to be genuinely good for people who read little. Every form screen's text is known at
+build time, so it is rendered once with OpenAI's gpt-4o-mini-tts (voice nova, Mexican
+Spanish instructions) and shipped as static MP3s: same quality on every phone, works
+offline, no third party involved when someone taps play. Only dynamic text (help-chat
+answers, the confirmation code) uses the Worker's /api/tts at runtime, with the device
+voice as fallback. OpenAI over ElevenLabs and Google because one plain REST call covers
+both paths, quality is close, and the whole form costs cents to render.

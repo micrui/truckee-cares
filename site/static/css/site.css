@@ -120,3 +120,4 @@ legend { font-weight: 700; margin-bottom: 6px; padding: 0; }
 .assist-log p.user { background: transparent; }
 .assist-form { display: flex; gap: 8px; }
 .assist-form input { flex: 1; font: inherit; font-size: 1.05rem; padding: 10px 12px; min-height: 48px; border: 2px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); }
+.speak-inline { background: transparent; border: 0; font-size: 1.1rem; cursor: pointer; min-height: 32px; padding: 0 6px; vertical-align: middle; }
