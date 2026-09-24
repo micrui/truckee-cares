@@ -109,8 +109,9 @@ legend { font-weight: 700; margin-bottom: 6px; padding: 0; }
 .done { text-align: center; padding: 24px 0; }
 .done .code { font-size: 2rem; font-weight: 800; letter-spacing: 2px; background: var(--card); display: inline-block; padding: 12px 20px; border-radius: var(--radius); margin: 12px 0; }
 .help-bar { position: sticky; bottom: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 8px 0; margin-top: 24px; display: flex; gap: 6px; justify-content: center; }
-.help-bar .btn { min-height: 52px; flex: 1; padding: 5px 4px; font-size: 0.8rem; border-radius: 10px; flex-direction: column; gap: 1px; line-height: 1.1; white-space: nowrap; min-width: 0; overflow: hidden; }
+.help-bar .btn { min-height: 52px; flex: 1; padding: 5px 2px; font-size: 0.8rem; border-radius: 10px; flex-direction: column; gap: 1px; line-height: 1.1; white-space: nowrap; min-width: 0; overflow: hidden; }
 .help-bar .ico { font-size: 1.15rem; line-height: 1.2; }
+.help-bar .btn > span:not(.ico) { text-align: center; line-height: 1.05; }
 @media (min-width: 480px) { .help-bar .btn { font-size: 0.9rem; flex-direction: row; gap: 6px; } }
 .closed { text-align: center; padding: 24px 0; }
 @media (max-width: 400px) { html { font-size: 106%; } .summary dl { grid-template-columns: 1fr; } }

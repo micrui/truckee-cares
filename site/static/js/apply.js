@@ -308,18 +308,26 @@ function render() {
 // Shrink label text so every button in a row fits with a little relief, whatever the
 // language. Runs after each render and on resize. Buttons in one row share a size.
 function fitLabels() {
+  const FLOOR = 0.75;   // never below 75% of the CSS size (about 11px); wrap instead
   for (const row of root.querySelectorAll(".help-bar, .lang-toggle")) {
     const labels = [...row.querySelectorAll(".btn > span:not(.ico), button > span:not(.ico)")];
     if (!labels.length) continue;
-    const relief = 8;
+    const relief = 4;
     let scale = 1;
+    const avail = new Map();
     for (const l of labels) {
-      l.style.fontSize = "";
-      const btn = l.closest(".btn, button");
-      const avail = btn.clientWidth - relief - (parseFloat(getComputedStyle(btn).paddingLeft) + parseFloat(getComputedStyle(btn).paddingRight));
-      if (l.scrollWidth > avail && avail > 0) scale = Math.min(scale, avail / l.scrollWidth);
+      l.style.fontSize = ""; l.style.whiteSpace = "nowrap";
+      const btn = l.closest(".btn, button"); const cs = getComputedStyle(btn);
+      const a = btn.clientWidth - relief - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      avail.set(l, a);
+      if (l.scrollWidth > a && a > 0) scale = Math.min(scale, a / l.scrollWidth);
     }
-    if (scale < 1) for (const l of labels) l.style.fontSize = `${Math.max(0.6, scale) * parseFloat(getComputedStyle(l).fontSize)}px`;
+    if (scale >= 1) continue;
+    scale = Math.max(FLOOR, scale);
+    for (const l of labels) {
+      l.style.fontSize = `${scale * parseFloat(getComputedStyle(l).fontSize)}px`;
+      if (l.scrollWidth > avail.get(l)) l.style.whiteSpace = "normal";  // still too long: two lines
+    }
   }
 }
 let fitTimer;

@@ -218,3 +218,34 @@ def resolve_candidate(con, cid, verdict):
     if verdict == "same" and A["season"] != B["season"]:
         link_family(con, A, B)
     con.commit()
+
+
+def rejudge(con, season, workers=8):
+    """Run the judge on pairs that were left 'unsure' by rule (judge off, or no key at the
+    time). Updates the candidate, closes the placeholder task, and applies the verdict."""
+    from concurrent.futures import ThreadPoolExecutor
+    rows = con.execute("""SELECT c.id FROM candidates c JOIN applications a ON a.id=c.app_a JOIN applications b ON b.id=c.app_b
+                          WHERE c.verdict='unsure' AND c.decided_by='rule' AND (a.season=? OR b.season=?)""", (season, season)).fetchall()
+    ids = [r["id"] for r in rows]
+    pairs = {}
+    for cid in ids:
+        c = con.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone()
+        A = load_apps(con, "id=?", (c["app_a"],))[0]; B = load_apps(con, "id=?", (c["app_b"],))[0]
+        pairs[cid] = (A, B, json.loads(c["reasons"]))
+    def work(cid):
+        A, B, reasons = pairs[cid]
+        try:
+            return cid, judge_pair(A, B, reasons)
+        except Exception as e:  # keep going; the pair stays unsure
+            return cid, {"verdict": "unsure", "confidence": 0, "reason": f"judge error: {e}", "suggested_action": "ask_human", "question_for_applicant": ""}
+    stats = {"pairs": len(ids), "same": 0, "different": 0, "unsure": 0, "tasks": 0}
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for cid, judged in ex.map(work, ids):
+            A, B, reasons = pairs[cid]
+            con.execute("UPDATE candidates SET verdict=?, decided_by='llm', judge=?, decided_at=? WHERE id=?", (judged["verdict"], json.dumps(judged), now(), cid))
+            con.execute("UPDATE tasks SET status='dismissed', resolved_at=?, resolution='superseded by judge' WHERE candidate_id=? AND status='open'", (now(), cid))
+            stats[judged["verdict"]] = stats.get(judged["verdict"], 0) + 1
+            apply_verdict(con, cid, A, B, judged["verdict"], reasons, judged, stats)
+    log(con, "rejudge", season, json.dumps(stats))
+    con.commit()
+    return stats
