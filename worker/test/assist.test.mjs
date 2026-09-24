@@ -19,11 +19,11 @@ test("help passes program facts and answers", async () => {
 });
 
 test("extract returns schema-shaped fields", async () => {
-  const fields = { first_name: "Rosa", last_name: "Lopez", phone: "5305550100", other_adult: "", street: "1 Elm St", unit: "", city: "Truckee", zip: "96161", mail_street: "", adults: 2, adult_coat_sizes: [], children: [{ first_name: "Diego", age: 3, sex: "boy", coat: true }], want_food: true, want_toys: true, want_coats: true };
+  const fields = { first_name: "Rosa", last_name: "Lopez", phone: "5305550100", can_text: true, other_adult: "", street: "1 Elm St", unit: "", city: "Truckee", zip: "96161", mail_street: "", adults: 2, adult_coat_sizes: [], children: [{ first_name: "Diego", age: 3, sex: "boy", coat: true }], want_food: true, want_toys: true, want_coats: true };
   const ask = async (p) => { assert.equal(p.output_config.format.schema, EXTRACT_SCHEMA); return { stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ fields, missing: [], summary: "ok" }) }] }; };
   const r = await handleExtract(req({ lang: "en", text: "I'm Rosa Lopez, 530 555 0100, 1 Elm St Truckee 96161, two adults, my son Diego is 3 and needs a coat" }), {}, season, ask);
   assert.equal(r.status, 200);
   assert.equal(r.data.fields.children[0].first_name, "Diego");
-  const short = await handleExtract(req({ lang: "en", text: "hi" }), {}, season, ask);
+  const short = await handleExtract(req({ lang: "en", text: "" }), {}, season, ask);
   assert.equal(short.status, 400);
 });

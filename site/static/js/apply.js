@@ -168,6 +168,7 @@ function renderStep() {
       <h2>${t("welcome_rules_title")}</h2><ul>${t("welcome_rules").map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
       <div class="card"><h2>${t("phone_path_title")}</h2><p>${t("phone_path_text")}</p>
         <p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help")}</a><a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">🟢 ${t("whatsapp")}</a><a class="btn btn-ghost" href="tel:${config.help_phone}">📞 ${t("call")}</a></p></div>
+      ${voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
       ${assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
         ${sttEnabled() ? `<button type="button" class="btn btn-big ${rec.state === "recording" ? "btn-secondary recording" : "btn-primary"}" data-action="record" ${rec.state === "transcribing" || freeform.busy ? "disabled" : ""}>
           ${rec.state === "recording" ? "⏺ " + t("speak_stop") : rec.state === "transcribing" ? t("speak_transcribing") : "🎤 " + t("speak_start")}</button>
@@ -279,10 +280,12 @@ function render() {
     <a class="btn btn-help" href="sms:${config.help_phone}">${hb("💬", t("help"))}</a>
     <a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" rel="noopener">${hb("🟢", t("whatsapp"))}</a>
     <a class="btn btn-ghost" href="tel:${config.help_phone}">${hb("📞", t("call"))}</a></div>`;
-  const top = `<div class="apply-top"><a class="brand" href="${base}/${lang}/" aria-label="Truckee Community Cares"><img src="${base}/static/favicon.svg" alt="" width="36" height="36"><span class="brand-text">Truckee Community Cares</span></a>
+  const top = `<div class="apply-top"><a class="brand" href="${base}/${lang}/" aria-label="Truckee Community Cares"><img src="${base}/static/img/logo.png" alt="Truckee Community Cares" height="40"></a>
     <div class="lang-toggle" role="group" aria-label="Language"><button type="button" data-action="lang" data-lang="en" aria-pressed="${lang === "en"}"><span>English</span></button><button type="button" data-action="lang" data-lang="es" aria-pressed="${lang === "es"}"><span>Español</span></button></div></div>`;
   let body;
-  if (view === "done") {
+  if (view === "voice") {
+    body = renderVoice();
+  } else if (view === "done") {
     body = `<div class="done"><h1>✅ ${t("done_title")}</h1><p>${t("done_code")}</p><div class="code">${esc(doneId)}</div>
       <p>${t("done_text")}</p><p class="muted">${t("done_limited")}</p>
       <p><button class="btn btn-ghost" data-action="again">${t("done_again")}</button></p></div>`;
@@ -354,6 +357,9 @@ let player = null;                    // the one <audio> element in use
 const ttsEnabled = () => !!(config && config.tts);
 let freeform = { text: "", busy: false, error: false, missing: null, summary: "" };
 let rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };  // idle | recording | transcribing
+let voice = null;          // voice mode state, see startVoice()
+let voiceAudio = null;     // one <audio> element unlocked by the entry tap; reused for every playback
+const voiceEnabled = () => sttEnabled() && assistEnabled() && ttsEnabled();
 const sttEnabled = () => !!(config && config.stt) && !!navigator.mediaDevices?.getUserMedia && "MediaRecorder" in window;
 const assistEnabled = () => !!(config && config.assist);
 
@@ -434,6 +440,14 @@ root.addEventListener("click", async (ev) => {
   if (a === "assist-toggle") { readInputs(); assist.open = !assist.open; render(); if (assist.open) root.querySelector("#assist-q")?.focus(); return; }
   if (a === "freeform") { const ta = root.querySelector("#freeform"); freeform.text = ta ? ta.value : ""; await runFreeform(); return; }
   if (a === "record") { await toggleRecording(); return; }
+  if (a === "voice-start") { readInputs(); startVoice(); return; }
+  if (a === "voice-replay") { voiceAsk(currentQuestion().key); return; }
+  if (a === "voice-talk") { await voiceTalk(); return; }
+  if (a === "voice-ok") { voiceNext(); return; }
+  if (a === "voice-again") { voiceRepeat(); return; }
+  if (a === "voice-skip") { voiceNext(true); return; }
+  if (a === "voice-review") { view = "form"; voice = null; step = STEPS.indexOf("review"); render(); return; }
+  if (a === "voice-send") { state.consent_area = state.consent_one = state.consent_true = true; await submit(); return; }
   if (a === "lang") { readInputs(); setLang(el.dataset.lang); return; }
   readInputs();
   if (a === "next") { errors = validate(STEPS[step]); if (Object.keys(errors).length) return render(); step = Math.min(step + 1, STEPS.length - 1); }
@@ -470,8 +484,9 @@ function pickMime() {
   for (const m of ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"]) if (MediaRecorder.isTypeSupported(m)) return m;
   return "";
 }
-async function toggleRecording() {
+async function toggleRecording(onText) {
   if (rec.state === "recording") { rec.recorder.stop(); return; }
+  rec.onText = onText || null;
   rec.error = "";
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
@@ -491,18 +506,49 @@ async function toggleRecording() {
       if (!r.ok) throw new Error(r.status);
       const { text } = await r.json();
       if (!text) throw new Error("empty");
+      const cb = rec.onText;
+      rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };
+      if (cb) { await cb(text); return; }
       const ta = root.querySelector("#freeform");
       freeform.text = ((ta ? ta.value : freeform.text).trim() + " " + text).trim();
-      rec = { state: "idle", recorder: null, chunks: [], stream: null, error: "" };
       await runFreeform();
       return;
-    } catch (e) { console.error(e); rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("speak_error") }; }
+    } catch (e) {
+      console.error(e);
+      const cb = rec.onText;
+      rec = { state: "idle", recorder: null, chunks: [], stream: null, error: t("speak_error") };
+      if (cb) { await cb(""); return; }
+    }
     render();
   };
   recorder.start();
   render();
   // Safety stop at 90 seconds so a forgotten recording does not run forever.
   setTimeout(() => { if (rec.recorder === recorder && recorder.state === "recording") recorder.stop(); }, 90000);
+}
+
+function applyExtracted(f, { replaceChildren = true } = {}) {
+  const cities = config.service_area.cities.map((c) => c.toLowerCase());
+  const keep = (v, cur) => (v === "" || v === 0 || v === null || v === undefined || (Array.isArray(v) && !v.length)) ? cur : v;
+  state.first_name = keep(f.first_name, state.first_name); state.last_name = keep(f.last_name, state.last_name);
+  state.phone = keep(f.phone, state.phone); state.other_adult = keep(f.other_adult, state.other_adult);
+  if (f.phone && f.can_text === false) state.can_text = "no"; else if (f.phone) state.can_text = state.can_text || "yes";
+  state.street = keep(f.street, state.street); state.unit = keep(f.unit, state.unit); state.zip = keep(f.zip, state.zip);
+  if (f.city) { const i = cities.indexOf(f.city.toLowerCase()); state.city = i >= 0 ? config.service_area.cities[i] : "other"; state.city_other = i >= 0 ? "" : f.city; }
+  if (f.mail_street) { state.mail_same = "no"; state.mail_street = f.mail_street; }
+  if (f.adults) state.adults = String(f.adults);
+  if (f.adult_coat_sizes?.length) { state.adult_coat_sizes = f.adult_coat_sizes; state.adult_coats = "yes"; }
+  if (f.children?.length) {
+    const kids = f.children.map((c) => ({ ...blankChild(), first_name: c.first_name || "", age: c.age ?? "", sex: c.sex || "", coat: c.coat ? "yes" : "no" }));
+    state.children = replaceChildren ? kids : state.children.concat(kids); state.no_children = false; state.want_toys = true;
+  }
+  if (f.want_food) state.want_food = true; if (f.want_coats) state.want_coats = true;
+}
+
+async function extractText(text, question) {
+  const r = await fetch(`${config.api_base}/api/extract`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text, question }) });
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
 }
 
 async function runFreeform() {
@@ -513,19 +559,7 @@ async function runFreeform() {
     if (!r.ok) throw new Error(r.status);
     const { fields: f, missing } = await r.json();
     if (!f) throw new Error("no fields");
-    const cities = config.service_area.cities.map((c) => c.toLowerCase());
-    Object.assign(state, {
-      first_name: f.first_name || state.first_name, last_name: f.last_name || state.last_name, phone: f.phone || state.phone,
-      other_adult: f.other_adult || state.other_adult, street: f.street || state.street, unit: f.unit || state.unit, zip: f.zip || state.zip,
-      city: f.city ? (cities.includes(f.city.toLowerCase()) ? config.service_area.cities[cities.indexOf(f.city.toLowerCase())] : "other") : state.city,
-      city_other: f.city && !cities.includes(f.city.toLowerCase()) ? f.city : state.city_other,
-      mail_same: f.mail_street ? "no" : state.mail_same, mail_street: f.mail_street || state.mail_street,
-      adults: f.adults ? String(f.adults) : state.adults, adult_coat_sizes: f.adult_coat_sizes?.length ? f.adult_coat_sizes : state.adult_coat_sizes,
-      adult_coats: f.adult_coat_sizes?.length ? "yes" : state.adult_coats,
-      want_food: f.want_food || state.want_food, want_coats: f.want_coats || state.want_coats,
-    });
-    if (f.children?.length) state.children = f.children.map((c) => ({ ...blankChild(), first_name: c.first_name || "", age: c.age ?? "", sex: c.sex || "", coat: c.coat ? "yes" : "" }));
-    if (state.children.length) state.want_toys = true;
+    applyExtracted(f);
     freeform.missing = missing || []; prefilled = true; step = 1; saveDraft();
   } catch (e) { console.error(e); freeform.error = true; }
   freeform.busy = false; render();
@@ -568,10 +602,160 @@ async function submit() {
     doneId = data.id;
     if (state.remember) { try { const { consent_area, consent_one, consent_true, ...keep } = state; localStorage.setItem(REMEMBER_KEY, JSON.stringify({ saved: new Date().toISOString(), state: keep })); } catch (e) {} }
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
-    view = "done";
+    view = "done"; voice = null;
   } catch (e) {
     console.error(e); sendError = true;
   } finally { sending = false; render(); }
+}
+
+
+// ---------- Voice mode ----------
+// A person who cannot read the form answers out loud. Each question is a pre-rendered
+// recording; the answer is transcribed and extracted on the server; the readback is
+// spoken with the same voice. Only one thing on screen at a time, all buttons huge.
+const VOICE_QS = [
+  { id: "who", fields: ["first_name", "last_name", "phone", "can_text"] },
+  { id: "home", fields: ["street", "unit", "city", "city_other", "zip"] },
+  { id: "mail", fields: ["mail_same", "mail_street", "mail_city", "mail_zip"] },
+  { id: "adults", fields: ["adults", "adult_coats", "adult_coat_sizes"] },
+  { id: "children", fields: ["children", "no_children"] },
+  { id: "other", fields: ["other_adult"] },
+  { id: "notes", fields: ["notes"], optional: true },
+];
+const REQUIRED = [["first_name", (s) => s.first_name.trim()], ["last_name", (s) => s.last_name.trim()], ["phone", (s) => digits(s.phone).length === 10],
+  ["street", (s) => s.street.trim()], ["city", (s) => s.city && (s.city !== "other" || s.city_other)], ["zip", (s) => digits(s.zip).length === 5],
+  ["adults", (s) => !!s.adults], ["children", (s) => s.children.length || s.no_children]];
+
+function unlockAudio() {
+  if (voiceAudio) return;
+  voiceAudio = new Audio();
+  voiceAudio.src = "data:audio/mp3;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA//////////////////////////////////////////////////////////////////8AAABhTEFNRTMuMTAwA8MAAAAAAAAAABQgJAUHQQAB9AAAAnGMHkkIAAAAAAAAAAAAAAAAAAAA//sQxAADgnABGiAAQBCqgCRMAAgEAH///////////////7+n/9FTuQsQH//////2NG0jWUGlio5gLQTOtIoeR2WX////X4s9Ah/////VCZodxgh/////t5r//c2u//sQxAADzgAZ//AQAiEmNuWzwAHKxT6EQP7f///////////////4bsdTcAiSDATSOTRk5c0KpdKfBUyMQ0P//////////////////////////////7cRYnzADw4V//sQxAAD1gAIf/AAIhEN1GerwAA3GbTpvbABg7O2QRK//////////////////mI4Gq0sZLxwwtVMLWmU4cOuN/////////////////////////////+m53BPNWKk7A==";
+  voiceAudio.play().catch(() => {});
+}
+function voicePlay(src, onend) {
+  stopSpeaking();
+  if (!voiceAudio) unlockAudio();
+  voiceAudio.onended = () => { speaking = false; if (onend) onend(); };
+  voiceAudio.onerror = () => { speaking = false; };
+  voiceAudio.src = src; speaking = true;
+  voiceAudio.play().catch(() => { speaking = false; });
+}
+async function voiceSay(text, onend) {
+  try {
+    const r = await fetch(`${config.api_base}/api/tts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ lang, text }) });
+    if (r.ok) { voicePlay(URL.createObjectURL(await r.blob()), onend); return; }
+  } catch (e) { /* fall through */ }
+  synthSpeak(text, onend);
+}
+function voiceAsk(key) {
+  const name = `${lang}/${key}`;
+  if (audioManifest.files[name]) voicePlay(`${base}/static/audio/${name}.mp3`);
+  else voiceSay(t(key.replace(/^voice_m_/, "voice_m_").replace(/^voice_q_/, "voice_q_")));
+}
+
+function startVoice() {
+  unlockAudio();
+  view = "voice";
+  voice = { qi: -1, phase: "intro", transcript: "", readback: "", error: "", missingKey: null, rounds: 0 };
+  render();
+  voicePlay(`${base}/static/audio/${lang}/voice_intro.mp3`, () => { voice.qi = 0; voice.phase = "ask"; render(); voiceAsk("voice_q_" + VOICE_QS[0].id); });
+}
+
+function currentQuestion() {
+  if (voice.missingKey) return { id: "m_" + voice.missingKey, key: "voice_m_" + voice.missingKey, text: t("voice_m_" + voice.missingKey), missing: voice.missingKey };
+  const q = VOICE_QS[voice.qi];
+  return { ...q, key: "voice_q_" + q.id, text: t("voice_q_" + q.id) };
+}
+
+async function voiceTalk() {
+  const q = currentQuestion();
+  if (rec.state === "recording") { rec.recorder.stop(); voice.phase = "working"; render(); return; }
+  voice.error = ""; voice.phase = "recording";
+  await toggleRecording(async (text) => {
+    if (!text) { voice.error = t("voice_no_sound"); voice.phase = "ask"; render(); voiceSay(t("voice_no_sound")); return; }
+    voice.transcript = text;
+    try {
+      // "no" / "same" style answers need no model call.
+      const short = text.trim().toLowerCase();
+      const isNo = /^(no|non|nope|ninguno|ninguna|nada|nadie|no hay)\b/.test(short) && short.length < 25;
+      const isSame = /\b(same|misma|mismo|s[ií]|yes|igual)\b/.test(short) && !/\d/.test(short) && short.length < 40;
+      if (q.id === "mail" && isSame) { state.mail_same = "yes"; }
+      else if (q.id === "other" && isNo) { state.other_adult = ""; }
+      else if (q.id === "notes" && isNo) { state.notes = ""; }
+      else if (q.id === "notes") { state.notes = text.trim().slice(0, 500); }
+      else if (q.id === "children" && isNo) { state.children = []; state.no_children = true; }
+      else {
+        const { fields } = await extractText(text, q.text);
+        if (q.id === "who" || q.id === "home" || q.id === "adults") { for (const k of q.fields) if (k in state && !Array.isArray(state[k])) state[k] = typeof state[k] === "boolean" ? state[k] : ""; }
+        if (fields) applyExtracted(fields, { replaceChildren: true });
+        if (q.id === "mail" && !fields?.mail_street) state.mail_same = state.mail_same || "yes";
+        if (q.id === "other" && fields?.other_adult) state.other_adult = fields.other_adult;
+        if (q.missing) { /* targeted fill already applied */ }
+      }
+      voice.readback = readbackFor(q); voice.phase = "confirm"; saveDraft(); render();
+      voiceSay(voice.readback);
+    } catch (e) { console.error(e); voice.error = t("speak_error"); voice.phase = "ask"; render(); }
+  });
+  render();
+}
+
+function spaced(p) { const d = digits(p); return d ? d.split("").join(" ").replace(/(\d \d \d) (\d \d \d) /, "$1, $2, ") : ""; }
+function readbackFor(q) {
+  const s = state; const cityName = s.city === "other" ? s.city_other : s.city;
+  const addr = [s.street, s.unit, cityName, s.zip].filter(Boolean).join(", ");
+  switch (q.id) {
+    case "who": case "m_first_name": case "m_last_name": case "m_phone": return (s.first_name || s.last_name || s.phone) ? t("voice_rb_who", s.first_name, s.last_name, spaced(s.phone), s.can_text === "yes") : t("voice_rb_nothing");
+    case "home": case "m_street": case "m_zip": case "m_city": return addr ? t("voice_rb_home", addr) : t("voice_rb_nothing");
+    case "mail": return s.mail_same === "no" && s.mail_street ? t("voice_rb_mail", [s.mail_street, s.mail_city, s.mail_zip].filter(Boolean).join(", ")) : t("voice_rb_mail_same");
+    case "adults": case "m_adults": return s.adults ? t("voice_rb_adults", Number(s.adults), s.adult_coat_sizes) : t("voice_rb_nothing");
+    case "children": case "m_children": return t("voice_rb_children", s.children.map((c) => t("voice_rb_child", c.first_name, Number(c.age), c.sex, c.coat === "yes")));
+    case "other": return t("voice_rb_other", s.other_adult);
+    case "notes": return t("voice_rb_notes", s.notes);
+  }
+  return "";
+}
+
+function nextMissing() { const m = REQUIRED.find(([k, ok]) => !ok(state)); return m ? m[0] : null; }
+
+function voiceNext(skipped = false) {
+  stopSpeaking();
+  voice.transcript = ""; voice.readback = ""; voice.error = "";
+  if (voice.missingKey) { voice.missingKey = null; }
+  else if (voice.qi < VOICE_QS.length - 1) { voice.qi += 1; voice.phase = "ask"; render(); voiceAsk("voice_q_" + VOICE_QS[voice.qi].id); return; }
+  const miss = nextMissing();
+  if (miss && voice.rounds < 3) { voice.rounds += 1; voice.missingKey = miss; voice.phase = "ask"; render(); voiceAsk("voice_m_" + miss); return; }
+  voice.phase = "summary"; voice.qi = VOICE_QS.length; render();
+  const summary = [readbackFor({ id: "who" }), readbackFor({ id: "home" }), readbackFor({ id: "mail" }), readbackFor({ id: "adults" }), readbackFor({ id: "children" }), readbackFor({ id: "other" })].join(" ");
+  voicePlay(`${base}/static/audio/${lang}/voice_consents.mp3`, () => voiceSay(summary, () => voicePlay(`${base}/static/audio/${lang}/voice_consents_text.mp3`)));
+}
+function voiceRepeat() { stopSpeaking(); voice.phase = "ask"; voice.transcript = ""; voice.readback = ""; render(); voiceAsk(currentQuestion().key); }
+
+function renderVoice() {
+  const total = VOICE_QS.length;
+  const dots = `<div class="step-dots" aria-hidden="true">${VOICE_QS.map((_, i) => `<span class="${i <= voice.qi ? "on" : ""}"></span>`).join("")}</div>`;
+  if (voice.phase === "intro") return `<div class="voice"><p class="q">${t("voice_intro")}</p><p class="muted">🔊</p></div>`;
+  if (voice.phase === "summary") {
+    return `<div class="voice">${dots}<p class="q">${t("voice_summary_intro")}</p>
+      <div class="transcript">${["who", "home", "mail", "adults", "children", "other", "notes"].map((id) => `<p>${esc(readbackFor({ id }))}</p>`).join("")}</div>
+      <p class="readback">${t("voice_consents")}</p>
+      <button type="button" class="btn btn-primary big" data-action="voice-send">✅ ${t("voice_send")}</button>
+      <button type="button" class="btn btn-ghost big" data-action="voice-review">✏️ ${t("voice_review")}</button>
+      ${sendError ? `<p class="error">${t("send_error")}</p>` : ""}</div>`;
+  }
+  const q = currentQuestion();
+  let body = `<div class="voice">${dots}<p class="q">${esc(q.text)}</p>
+    <button type="button" class="btn btn-ghost" data-action="voice-replay" style="margin-bottom:8px">🔊</button>`;
+  if (voice.phase === "ask" || voice.phase === "recording") {
+    body += `<button type="button" class="btn big ${voice.phase === "recording" ? "rec" : "btn-primary"}" data-action="voice-talk">${voice.phase === "recording" ? "⏺ " + t("voice_tap_done") : "🎤 " + t("voice_tap_talk")}</button>`;
+    if (voice.error) body += `<p class="error">${esc(voice.error)}</p>`;
+    if (q.optional) body += `<p class="small-links"><button type="button" class="btn btn-ghost" data-action="voice-skip">${t("voice_skip")}</button></p>`;
+  } else if (voice.phase === "working") {
+    body += `<p class="readback">${t("voice_working")}</p>`;
+  } else if (voice.phase === "confirm") {
+    body += `<div class="transcript"><strong>${t("voice_heard")}</strong> ${esc(voice.transcript)}</div><p class="readback">${esc(voice.readback)}</p>
+      <div class="row2"><button type="button" class="btn btn-primary" data-action="voice-ok">✅ ${t("voice_correct")}</button><button type="button" class="btn btn-ghost" data-action="voice-again">🔁 ${t("voice_again")}</button></div>`;
+  }
+  return body + "</div>";
 }
 
 // ---------- boot ----------

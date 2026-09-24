@@ -35,14 +35,14 @@ export const EXTRACT_SCHEMA = {
     fields: {
       type: "object",
       properties: {
-        first_name: { type: "string" }, last_name: { type: "string" }, phone: { type: "string" },
+        first_name: { type: "string" }, last_name: { type: "string" }, phone: { type: "string" }, can_text: { type: "boolean" },
         other_adult: { type: "string" }, street: { type: "string" }, unit: { type: "string" }, city: { type: "string" }, zip: { type: "string" },
         mail_street: { type: "string" }, adults: { type: "integer" },
         adult_coat_sizes: { type: "array", items: { type: "string" } },
         children: { type: "array", items: { type: "object", properties: { first_name: { type: "string" }, age: { type: "integer" }, sex: { type: "string", enum: ["boy", "girl", ""] }, coat: { type: "boolean" } }, required: ["first_name", "age", "sex", "coat"], additionalProperties: false } },
         want_food: { type: "boolean" }, want_toys: { type: "boolean" }, want_coats: { type: "boolean" },
       },
-      required: ["first_name", "last_name", "phone", "other_adult", "street", "unit", "city", "zip", "mail_street", "adults", "adult_coat_sizes", "children", "want_food", "want_toys", "want_coats"],
+      required: ["first_name", "last_name", "phone", "can_text", "other_adult", "street", "unit", "city", "zip", "mail_street", "adults", "adult_coat_sizes", "children", "want_food", "want_toys", "want_coats"],
       additionalProperties: false,
     },
     missing: { type: "array", items: { type: "string" } },
@@ -53,7 +53,7 @@ export const EXTRACT_SCHEMA = {
 };
 
 export function extractSystem(lang) {
-  return `You turn what a person says about their family into fields for a holiday-assistance form. Copy only what they said; use "" or 0 or [] for anything not stated, never guess. Phone as 10 digits. City is Truckee, Soda Springs, or what they said. Children: first name, age in years (0 for a baby), boy or girl if stated, coat true only if they said the child needs a coat. adults is the number of adults in the home if stated, else 0. want_food, want_toys, want_coats are true only if they asked for that. "missing" lists, in ${lang === "es" ? "Spanish" : "English"}, the things the form still needs that they did not say (for example "children's ages"). "summary" is one warm sentence in ${lang === "es" ? "Mexican Spanish (usted)" : "plain English"} repeating back what you understood so they can check it.`;
+  return `You turn what a person says about their family into fields for a holiday-assistance form. Copy only what they said; use "" or 0 or [] for anything not stated, never guess. Phone as 10 digits (people often say the digits in groups, or in Spanish). can_text is true if they agreed to texts, or said nothing about it; false only if they declined. City is Truckee, Soda Springs, or what they said. Children: first name, age in years (0 for a baby), boy or girl if stated, coat true only if they said the child needs a coat. adults is the number of adults in the home if stated, else 0. want_food, want_toys, want_coats are true only if they asked for that. When a question is given, fill only what that answer says; leave everything else empty. A plain "no" or "yes" answer means empty fields. "missing" lists, in ${lang === "es" ? "Spanish" : "English"}, the things the form still needs that they did not say (for example "children's ages"). "summary" is one warm sentence in ${lang === "es" ? "Mexican Spanish (usted)" : "plain English"} repeating back what you understood so they can check it.`;
 }
 
 // `ask` is injectable so tests never touch the network.
@@ -87,12 +87,15 @@ export async function handleExtract(req, env, season, ask = makeAsk(env)) {
   let body; try { body = await req.json(); } catch { return { status: 400, data: { error: "bad_json" } }; }
   const lang = body.lang === "es" ? "es" : "en";
   const text = String(body.text || "").slice(0, MAX_TEXT).trim();
-  if (text.length < 10) return { status: 400, data: { error: "too_short" } };
+  if (text.length < 2) return { status: 400, data: { error: "too_short" } };
+  // Voice mode sends one answer at a time with the question that was asked.
+  const question = typeof body.question === "string" ? body.question.slice(0, 400) : "";
+  const content = question ? `The person was asked: "${question}"\nThey answered: ${text}` : text;
   const resp = await ask({
     model: MODEL, max_tokens: 4000,
     system: [{ type: "text", text: extractSystem(lang), cache_control: { type: "ephemeral" } }],
     output_config: { effort: "low", format: { type: "json_schema", schema: EXTRACT_SCHEMA } },
-    messages: [{ role: "user", content: text }],
+    messages: [{ role: "user", content }],
   });
   if (resp.stop_reason === "refusal") return { status: 200, data: { fields: null, missing: [], summary: "" } };
   const out = JSON.parse(resp.content.find((b) => b.type === "text").text);

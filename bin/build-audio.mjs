@@ -42,6 +42,15 @@ export function narration(lang) {
     review: [s.review_title, s.review_text, s.consent_area, s.consent_one, s.consent_true, s.remember, s.remember_hint, s.review_privacy],
     done: [s.done_title, s.done_code, s.done_text, s.done_limited],
     not_open: [s.not_open_title, s.not_open_text(opensDate(lang))],
+    voice_intro: [s.voice_intro],
+    voice_q_who: [s.voice_q_who], voice_q_home: [s.voice_q_home], voice_q_mail: [s.voice_q_mail], voice_q_adults: [s.voice_q_adults],
+    voice_q_children: [s.voice_q_children], voice_q_other: [s.voice_q_other], voice_q_notes: [s.voice_q_notes],
+    voice_m_first_name: [s.voice_missing_intro, s.voice_m_first_name], voice_m_last_name: [s.voice_missing_intro, s.voice_m_last_name],
+    voice_m_phone: [s.voice_missing_intro, s.voice_m_phone], voice_m_street: [s.voice_missing_intro, s.voice_m_street],
+    voice_m_zip: [s.voice_missing_intro, s.voice_m_zip], voice_m_city: [s.voice_missing_intro, s.voice_m_city],
+    voice_m_adults: [s.voice_missing_intro, s.voice_m_adults], voice_m_children: [s.voice_missing_intro, s.voice_m_children],
+    voice_consents: [s.voice_summary_intro],
+    voice_consents_text: [s.voice_consents],
     closed: [s.closed_title, s.closed_text],
   };
 }

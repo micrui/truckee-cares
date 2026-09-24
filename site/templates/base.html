@@ -16,9 +16,8 @@
 {% block header %}
 <header class="site-header">
   <div class="wrap row">
-    <a class="brand" href="{{ base }}/{{ lang }}/">
-      <img src="{{ base }}/static/favicon.svg" alt="" width="36" height="36">
-      <span>{{ s.org }}</span>
+    <a class="brand" href="{{ base }}/{{ lang }}/" aria-label="{{ s.org }}">
+      <img src="{{ base }}/static/img/logo.png" alt="{{ s.org }}" height="44">
     </a>
     {% if other_path is defined %}
     <a class="lang-switch" href="{{ other_path }}" hreflang="{{ other_lang }}" lang="{{ other_lang }}"

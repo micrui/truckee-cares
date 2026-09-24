@@ -2,9 +2,9 @@
   "model": "gpt-4o-mini-tts",
   "files": {
     "en/welcome": {
-      "hash": "7ab1dab36dd5d76e",
-      "chars": 827,
-      "rendered": "2026-09-24T19:38:01.877Z"
+      "hash": "0e819717a5e5964a",
+      "chars": 821,
+      "rendered": "2026-09-24T20:23:36.498Z"
     },
     "en/you": {
       "hash": "cc6c7e801c36ba92",
@@ -52,9 +52,9 @@
       "rendered": "2026-09-24T19:30:42.789Z"
     },
     "es/welcome": {
-      "hash": "9b25197e8dd80a50",
-      "chars": 873,
-      "rendered": "2026-09-24T19:38:14.126Z"
+      "hash": "98a5e79a659001bf",
+      "chars": 870,
+      "rendered": "2026-09-24T20:24:17.715Z"
     },
     "es/you": {
       "hash": "c622c77a381ea02f",
@@ -100,6 +100,186 @@
       "hash": "2e7200a268fea75b",
       "chars": 103,
       "rendered": "2026-09-24T19:31:22.999Z"
+    },
+    "en/voice_intro": {
+      "hash": "f0b6ef686b397dc2",
+      "chars": 151,
+      "rendered": "2026-09-24T20:23:38.732Z"
+    },
+    "en/voice_q_who": {
+      "hash": "c843431d363103e7",
+      "chars": 88,
+      "rendered": "2026-09-24T20:23:39.901Z"
+    },
+    "en/voice_q_home": {
+      "hash": "cc7f3915ed8796c4",
+      "chars": 66,
+      "rendered": "2026-09-24T20:23:41.962Z"
+    },
+    "en/voice_q_mail": {
+      "hash": "55f68df3c575bb20",
+      "chars": 114,
+      "rendered": "2026-09-24T20:23:43.545Z"
+    },
+    "en/voice_q_adults": {
+      "hash": "94cd32f67cf2c1e4",
+      "chars": 89,
+      "rendered": "2026-09-24T20:23:46.188Z"
+    },
+    "en/voice_q_children": {
+      "hash": "77f4f41c81a7cb6c",
+      "chars": 85,
+      "rendered": "2026-09-24T20:23:47.781Z"
+    },
+    "en/voice_q_other": {
+      "hash": "dbc4c96565454de3",
+      "chars": 140,
+      "rendered": "2026-09-24T20:23:49.440Z"
+    },
+    "en/voice_q_notes": {
+      "hash": "7b930dd2a5853a69",
+      "chars": 64,
+      "rendered": "2026-09-24T20:23:50.530Z"
+    },
+    "en/voice_m_first_name": {
+      "hash": "455814e37be6a452",
+      "chars": 49,
+      "rendered": "2026-09-24T20:23:51.897Z"
+    },
+    "en/voice_m_last_name": {
+      "hash": "d93abbffbab401c1",
+      "chars": 48,
+      "rendered": "2026-09-24T20:23:53.017Z"
+    },
+    "en/voice_m_phone": {
+      "hash": "e7fc3126c61be023",
+      "chars": 78,
+      "rendered": "2026-09-24T20:23:54.402Z"
+    },
+    "en/voice_m_street": {
+      "hash": "fd677ea2f49e9bce",
+      "chars": 90,
+      "rendered": "2026-09-24T20:23:57.334Z"
+    },
+    "en/voice_m_zip": {
+      "hash": "d3cb3cd76d21d0dd",
+      "chars": 68,
+      "rendered": "2026-09-24T20:23:58.946Z"
+    },
+    "en/voice_m_city": {
+      "hash": "1a719a72d9f6f56d",
+      "chars": 51,
+      "rendered": "2026-09-24T20:24:01.239Z"
+    },
+    "en/voice_m_adults": {
+      "hash": "afb039bccc9dde53",
+      "chars": 59,
+      "rendered": "2026-09-24T20:24:02.863Z"
+    },
+    "en/voice_m_children": {
+      "hash": "6553dfcce78f02e2",
+      "chars": 107,
+      "rendered": "2026-09-24T20:24:04.402Z"
+    },
+    "en/voice_consents": {
+      "hash": "beece6604cf2f65a",
+      "chars": 65,
+      "rendered": "2026-09-24T20:24:05.605Z"
+    },
+    "en/voice_consents_text": {
+      "hash": "26c181d909240f1d",
+      "chars": 158,
+      "rendered": "2026-09-24T20:24:07.860Z"
+    },
+    "es/voice_intro": {
+      "hash": "03ec8d76f31cfb62",
+      "chars": 155,
+      "rendered": "2026-09-24T20:24:20.162Z"
+    },
+    "es/voice_q_who": {
+      "hash": "35099e1858474f9a",
+      "chars": 91,
+      "rendered": "2026-09-24T20:24:21.675Z"
+    },
+    "es/voice_q_home": {
+      "hash": "90671806834eb517",
+      "chars": 61,
+      "rendered": "2026-09-24T20:24:23.213Z"
+    },
+    "es/voice_q_mail": {
+      "hash": "a26427f18c576838",
+      "chars": 116,
+      "rendered": "2026-09-24T20:24:25.147Z"
+    },
+    "es/voice_q_adults": {
+      "hash": "1166e79d3ce19f0d",
+      "chars": 93,
+      "rendered": "2026-09-24T20:24:26.903Z"
+    },
+    "es/voice_q_children": {
+      "hash": "bcdd08b451f89e25",
+      "chars": 78,
+      "rendered": "2026-09-24T20:24:28.592Z"
+    },
+    "es/voice_q_other": {
+      "hash": "0dc9a1acffec2b49",
+      "chars": 139,
+      "rendered": "2026-09-24T20:24:30.755Z"
+    },
+    "es/voice_q_notes": {
+      "hash": "42908d1abb6acd71",
+      "chars": 59,
+      "rendered": "2026-09-24T20:24:32.064Z"
+    },
+    "es/voice_m_first_name": {
+      "hash": "38bc5c374861ff7c",
+      "chars": 47,
+      "rendered": "2026-09-24T20:24:33.030Z"
+    },
+    "es/voice_m_last_name": {
+      "hash": "dad94b598573d53b",
+      "chars": 54,
+      "rendered": "2026-09-24T20:24:38.200Z"
+    },
+    "es/voice_m_phone": {
+      "hash": "fa25e2a34595de0a",
+      "chars": 81,
+      "rendered": "2026-09-24T20:24:39.594Z"
+    },
+    "es/voice_m_street": {
+      "hash": "93296858279d25df",
+      "chars": 88,
+      "rendered": "2026-09-24T20:24:41.072Z"
+    },
+    "es/voice_m_zip": {
+      "hash": "2c04320fe9a0f782",
+      "chars": 78,
+      "rendered": "2026-09-24T20:24:45.030Z"
+    },
+    "es/voice_m_city": {
+      "hash": "61978bc7a28aeac9",
+      "chars": 48,
+      "rendered": "2026-09-24T20:24:48.299Z"
+    },
+    "es/voice_m_adults": {
+      "hash": "e79bb9fbc6212d90",
+      "chars": 62,
+      "rendered": "2026-09-24T20:24:49.553Z"
+    },
+    "es/voice_m_children": {
+      "hash": "506506104aa20250",
+      "chars": 87,
+      "rendered": "2026-09-24T20:24:52.041Z"
+    },
+    "es/voice_consents": {
+      "hash": "667a188701272114",
+      "chars": 67,
+      "rendered": "2026-09-24T20:24:53.298Z"
+    },
+    "es/voice_consents_text": {
+      "hash": "8fa6cb861c824120",
+      "chars": 153,
+      "rendered": "2026-09-24T20:24:55.097Z"
     }
   }
 }

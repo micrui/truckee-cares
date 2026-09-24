@@ -2,6 +2,7 @@
 {% block title %}{{ s.org }} · {{ s.tagline }}{% endblock %}
 {% block main %}
 <section class="hero">
+  <div class="logo-big"><img src="{{ base }}/static/img/logo.png" alt="{{ s.org }}"></div>
   <h1>{{ page.title }}</h1>
   <p class="lead">{{ page.lead }}</p>
   <div class="cta-row">
@@ -15,8 +16,11 @@
     </div>
   </div>
 </section>
+<div class="photo-strip" aria-hidden="true">
+  {% for i in [1, 2, 3, 4] %}<img src="{{ base }}/static/img/photos/tcc-{{ i }}.jpg" alt="" loading="lazy">{% endfor %}
+</div>
 <section class="steps-grid">
-  <h2>{{ page.how_title }}</h2>
+  <h2 class="section">{{ page.how_title }}</h2>
   <ol>
     {% for step in page.how %}
     <li><strong>{{ step.title }}</strong><span>{{ step.text }}</span></li>
@@ -24,11 +28,11 @@
   </ol>
 </section>
 <section class="card">
-  <h2>{{ page.privacy_title }}</h2>
+  <h2 class="section" style="margin-top:0">{{ page.privacy_title }}</h2>
   <p>{{ page.privacy_text }}</p>
 </section>
 <section class="stats">
-  <h2>{{ page.stats_title }}</h2>
+  <h2 class="section">{{ page.stats_title }}</h2>
   <ul>
     {% for st in page.stats %}
     <li><span class="n">{{ st.n }}</span><span>{{ st.label }}</span></li>
