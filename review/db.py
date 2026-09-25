@@ -23,14 +23,16 @@ CREATE TABLE IF NOT EXISTS applications (
   submitted_at TEXT NOT NULL,
   lang TEXT NOT NULL DEFAULT 'en',
   family_id TEXT REFERENCES families(id),
-  status TEXT NOT NULL DEFAULT 'new',  -- new | matched | accepted | declined | duplicate | out_of_area | hold
+  status TEXT NOT NULL DEFAULT 'new',  -- new | matched | accepted | declined | duplicate | out_of_area | hold | needs_info | superseded
   payload TEXT NOT NULL,               -- plaintext JSON, schema version in payload.version
   norm TEXT NOT NULL,                  -- normalized keys used for matching (JSON)
-  server_status TEXT,                  -- last status pushed to the worker
+  server_status TEXT,                  -- the worker's status as last seen (pulled, pushed, or resynced)
   updated_at TEXT,
   supersedes TEXT,                     -- id of the earlier application this one replaces (an edit)
   note TEXT NOT NULL DEFAULT '',       -- short public note for the applicant, shown on the status page (no applicant data)
-  server_note TEXT                     -- last note pushed to the worker
+  server_note TEXT,                    -- the worker's note as last seen
+  prior_status TEXT,                   -- for an edit: the status the replaced application had on this Mac
+  prior_note TEXT                      -- for an edit: the note the replaced application carried
 );
 CREATE INDEX IF NOT EXISTS applications_season ON applications(season, submitted_at);
 CREATE TABLE IF NOT EXISTS candidates (
@@ -39,8 +41,8 @@ CREATE TABLE IF NOT EXISTS candidates (
   app_b TEXT NOT NULL REFERENCES applications(id),
   score REAL NOT NULL,
   reasons TEXT NOT NULL,               -- JSON list of strings
-  verdict TEXT,                        -- same | different | unsure
-  decided_by TEXT,                     -- rule | llm | human
+  verdict TEXT,                        -- same | different | unsure | void (one side was edited away)
+  decided_by TEXT,                     -- rule | llm | human | system
   judge TEXT,                          -- JSON: the judge's full answer
   decided_at TEXT,
   UNIQUE(app_a, app_b)
@@ -48,6 +50,7 @@ CREATE TABLE IF NOT EXISTS candidates (
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,                  -- review_match | resolve_duplicate | verify_address | contact_applicant | review_notes
+                                       -- | review_edit (the applicant edited a decided application) | decrypt_error | preview_in_window
   app_id TEXT REFERENCES applications(id),
   candidate_id TEXT REFERENCES candidates(id),
   title TEXT NOT NULL,
@@ -83,6 +86,9 @@ def connect(path=DB_PATH):
     if "note" not in cols:
         con.execute("ALTER TABLE applications ADD COLUMN note TEXT NOT NULL DEFAULT ''")
         con.execute("ALTER TABLE applications ADD COLUMN server_note TEXT")
+    if "prior_status" not in cols:
+        con.execute("ALTER TABLE applications ADD COLUMN prior_status TEXT")
+        con.execute("ALTER TABLE applications ADD COLUMN prior_note TEXT")
     con.execute("PRAGMA foreign_keys=ON")
     return con
 

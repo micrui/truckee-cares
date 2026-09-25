@@ -4,6 +4,7 @@ and delete-failed, preview rows submitted during the season become tasks once, a
 nothing decrypted ever reaches the events or tasks tables."""
 import base64
 import builtins
+import io
 import json
 import os
 import re
@@ -40,18 +41,31 @@ def good_payload(first):
                        "children": [{"first_name": "Ana", "age": 4, "sex": "girl"}], "programs": {"food": True}}, ensure_ascii=False)
 
 
-def row(sid, created, ident, text, lang="es"):
-    return {"id": sid, "created_at": created, "lang": lang, "status": "new", "ciphertext": encrypt(ident, text)}
+def row(sid, created, ident, text, lang="es", **extra):
+    return {"id": sid, "created_at": created, "lang": lang, "status": "new", "note": "", "ciphertext": encrypt(ident, text), **extra}
 
 
 class Server:
     """Stands in for the Worker: keyset pages per season exactly like the real query
     (created_at > since OR (created_at = since AND id > since_id), ordered, LIMIT page),
-    one row by id, delete by id. Every call is recorded."""
+    one row by id, delete by id, PATCH of status and note (409 on a superseded row, like
+    the Worker). Every call is recorded; every PATCH body too."""
     def __init__(self, rows, page=500):
         self.rows = rows
         self.page = page
         self.calls = []
+        self.patches = []
+
+    def find(self, sid):
+        for rows in self.rows.values():
+            for r in rows:
+                if r["id"] == sid:
+                    return rows, r
+        return None, None
+
+    def status(self, sid):
+        _, r = self.find(sid)
+        return (r["status"], r.get("note", "")) if r else None
 
     def api(self, method, path, body=None, headers=None):
         u = urllib.parse.urlparse(path); q = urllib.parse.parse_qs(u.query)
@@ -59,14 +73,22 @@ class Server:
         if m:
             sid = m.group(1)
             self.calls.append((method, sid))
-            for rows in self.rows.values():
-                for r in rows:
-                    if r["id"] == sid:
-                        if method == "DELETE":
-                            rows.remove(r); return {"deleted": 1}
-                        return {"item": r}
+            rows, r = self.find(sid)
             if method == "DELETE":
+                if r:
+                    rows.remove(r); return {"deleted": 1}
                 return {"deleted": 0}
+            if method == "PATCH":
+                self.patches.append((sid, body["status"], body.get("note", "")))
+                if not r:
+                    return {"ok": True, "changed": 0}
+                if r["status"] == "superseded" and body["status"] != "superseded":
+                    nxt = next((x["id"] for rs in self.rows.values() for x in rs if x.get("supersedes") == sid), None)
+                    raise urllib.error.HTTPError(path, 409, "superseded", {}, io.BytesIO(json.dumps({"error": "superseded", "superseded_by": nxt}).encode()))
+                r["status"] = body["status"]; r["note"] = str(body.get("note") or "").strip()[:200]
+                return {"ok": True, "changed": 1}
+            if r:
+                return {"item": r}
             raise urllib.error.HTTPError(path, 404, "not found", {}, None)
         season = q.get("season", [""])[0]; since = q.get("since", [""])[0]; since_id = q.get("since_id", [""])[0]
         self.calls.append((method, season, since, since_id))
@@ -344,39 +366,261 @@ def test_cli_turns_a_setup_error_into_an_exit_message(monkeypatch, tmp_path):
     assert "keygen" in str(ex.value)
 
 
-def test_edit_supersedes_earlier_application(tmp_path, monkeypatch):
-    """A row that supersedes another marks the old one superseded, inherits its family and
-    decision, dismisses its open tasks, and the matcher ignores the old one."""
-    import json
-    from review import sync
-    from review.db import connect, add_task
-    from review.match import run_matching, load_apps
-    con = connect(tmp_path / "t.sqlite")
+# --- edits (supersedes), pushing, and a second Mac ------------------------------------------
+
+def app_payload(first="Rosa", last="Lopez", phone="5305550100", street="1 Elm", zip_="96161", kids=(("Ana", 4, "girl"),), adults=2):
+    return {"version": 1, "applicant": {"first_name": first, "last_name": last, "phone": phone, "contact_lang": "es"},
+            "address": {"street": street, "unit": "", "city": "Truckee", "zip": zip_, "in_area": zip_ in ("96161", "96160", "96162", "95728")},
+            "mailing": None, "household": {"adults": adults, "adult_coat_sizes": []},
+            "children": [{"first_name": n, "age": a, "sex": s, "coat": False} for n, a, s in kids], "programs": {"food": True, "toys": True}}
+
+
+def local(con, sid):
+    r = con.execute("SELECT status, note, server_status, server_note, family_id, supersedes, prior_status, prior_note FROM applications WHERE id=?", (sid,)).fetchone()
+    return dict(r) if r else None
+
+
+def open_tasks(con, **where):
+    sql = "SELECT * FROM tasks WHERE status='open'" + "".join(f" AND {k}=?" for k in where)
+    return [dict(r) for r in con.execute(sql, tuple(where.values())).fetchall()]
+
+
+def supersede_on_server(srv, old_id, new_row):
+    """What the Worker does when an edit lands: the new row names the old one, the old one is superseded."""
+    srv.rows["2026"].append(new_row)
+    _, r = srv.find(old_id); r["status"] = "superseded"
+
+
+def test_edit_of_a_decided_application_starts_over_with_a_task(monkeypatch, tmp_path):
+    """The old row is superseded (open tasks dismissed, pairs void, nothing pushed for it
+    again). The replacement keeps the family, records the old decision and note, starts as
+    'new' with one review_edit task naming the fields that changed, and is matched."""
+    from review.db import add_task
+    from review.match import run_matching, set_decision
     ident = pyrage.x25519.Identity.generate()
-    recips = [ident.to_public()]
-    def enc(payload):
-        return armor(pyrage.encrypt(json.dumps(payload).encode(), recips))
-    p = {"version": 1, "applicant": {"first_name": "Rosa", "last_name": "Lopez", "phone": "5305550100"}, "address": {"street": "1 Elm", "city": "Truckee", "zip": "96161", "in_area": True}, "children": [], "household": {"adults": 2}}
-    rows = [
-        {"id": "TCC-26-AAAAA", "season": "2026", "lang": "es", "created_at": "2026-10-20T10:00:00Z", "ciphertext": enc(p), "status": "new"},
-        {"id": "TCC-26-BBBBB", "season": "2026", "lang": "es", "created_at": "2026-10-20T11:00:00Z", "ciphertext": enc({**p, "applicant": {**p["applicant"], "last_name": "Lopez Garcia"}}), "status": "new", "supersedes": "TCC-26-AAAAA"},
-    ]
-    server = Server({"2026": rows[:1], "preview": []})
-    monkeypatch.setattr(sync, "api", server.api)
-    monkeypatch.setattr(sync, "load_identities", lambda: [ident])
-    monkeypatch.setattr(sync, "load_config", lambda: {"season": "2026", "opens": "2026-10-15T00:00:00", "closes": "2026-11-15T23:59:59", "timezone": "America/Los_Angeles", "api_base": "x"})
-    # pull only the first row, decide on it, then pull the edit
-    sync.pull(con)
+    p = app_payload()
+    rows = {"2026": [row("TCC-26-AAAAA", "2026-10-20T10:00:00Z", ident, json.dumps(p))], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    assert sync.pull(con) == (1, 0)
+    run_matching(con, "2026", use_judge=False)
     con.execute("INSERT INTO families(id,created_at,display_name) VALUES('fam-1','x','Lopez, Rosa')")
-    con.execute("UPDATE applications SET status='accepted', family_id='fam-1' WHERE id='TCC-26-AAAAA'")
-    add_task(con, "verify_address", "check", app_id="TCC-26-AAAAA")
-    con.commit()
-    server.rows = {"2026": rows, "preview": []}
+    con.execute("UPDATE applications SET family_id='fam-1' WHERE id='TCC-26-AAAAA'")
+    set_decision(con, "TCC-26-AAAAA", "accepted", "ok")
+    add_task(con, "verify_address", "check", app_id="TCC-26-AAAAA"); con.commit()
+    assert sync.push_statuses(con) == 1 and srv.status("TCC-26-AAAAA") == ("accepted", "ok")
+    edited = app_payload(street="2 Oak", kids=(("Ana", 4, "girl"), ("Luis", 7, "boy")))
+    supersede_on_server(srv, "TCC-26-AAAAA", row("TCC-26-BBBBB", "2026-10-20T11:00:00Z", ident, json.dumps(edited), supersedes="TCC-26-AAAAA"))
+    assert sync.pull(con) == (1, 0)
+    old, new = local(con, "TCC-26-AAAAA"), local(con, "TCC-26-BBBBB")
+    assert (old["status"], old["server_status"]) == ("superseded", "superseded")
+    assert (new["status"], new["family_id"], new["supersedes"], new["prior_status"], new["prior_note"], new["note"]) == ("new", "fam-1", "TCC-26-AAAAA", "accepted", "ok", "")
+    assert open_tasks(con, app_id="TCC-26-AAAAA") == []
+    assert con.execute("SELECT resolution FROM tasks WHERE app_id='TCC-26-AAAAA'").fetchone()[0] == "application was edited"
+    (t,) = open_tasks(con, app_id="TCC-26-BBBBB")
+    assert t["kind"] == "review_edit" and t["title"] == "Edited after accepted: re-check"
+    assert "street" in t["detail"] and "children count" in t["detail"] and "child names" in t["detail"] and "phone" not in t["detail"]
+    assert "was accepted" in t["detail"] and "Old note: ok" in t["detail"]
+    for table in ("events", "tasks"):  # names, streets and the like never leave the applications table
+        for r in con.execute(f"SELECT * FROM {table}"):
+            assert "Oak" not in json.dumps(dict(r)) and "Luis" not in json.dumps(dict(r))
+    stats = run_matching(con, "2026", use_judge=False)
+    assert stats["apps"] == 1 and stats["pairs"] == 0  # the replacement is examined; the dead row is never a candidate
+    assert local(con, "TCC-26-BBBBB")["status"] == "matched"
+    # Push: the old row is left alone (the server set superseded); the new one is reported as fetched.
+    assert sync.push_statuses(con) == 1 and srv.patches[-1] == ("TCC-26-BBBBB", "fetched", "")
+    assert srv.status("TCC-26-AAAAA") == ("superseded", "ok")
+    set_decision(con, "TCC-26-BBBBB", "accepted", "")
+    assert sync.push_statuses(con) == 1 and srv.status("TCC-26-BBBBB") == ("accepted", "")
+    assert con.execute("SELECT status, resolution FROM tasks WHERE id=?", (t["id"],)).fetchone()[:] == ("done", "decided: accepted")
+    assert sync.push_statuses(con) == 0
+
+
+def test_needs_info_answered_by_an_edit_gets_a_task_with_the_question(monkeypatch, tmp_path):
+    from review.match import run_matching, set_decision
+    ident = pyrage.x25519.Identity.generate()
+    rows = {"2026": [row("TCC-26-AAAAA", "2026-10-20T10:00:00Z", ident, json.dumps(app_payload()))], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    sync.pull(con); run_matching(con, "2026", use_judge=False)
+    set_decision(con, "TCC-26-AAAAA", "needs_info", "traiga comprobante de domicilio")
+    assert sync.push_statuses(con) == 1
+    supersede_on_server(srv, "TCC-26-AAAAA", row("TCC-26-BBBBB", "2026-11-20T11:00:00Z", ident, json.dumps(app_payload(zip_="96160")), supersedes="TCC-26-AAAAA"))
+    sync.pull(con)  # an answer may arrive after the season closes; it is an edit like any other
+    new = local(con, "TCC-26-BBBBB")
+    assert (new["status"], new["note"], new["prior_status"], new["prior_note"]) == ("new", "", "needs_info", "traiga comprobante de domicilio")
+    (t,) = open_tasks(con, app_id="TCC-26-BBBBB")
+    assert t["title"] == "Answered needs_info by editing" and "We asked: traiga comprobante de domicilio" in t["detail"] and "zip" in t["detail"]
+    assert run_matching(con, "2026", use_judge=False)["apps"] == 1
+
+
+def test_resend_without_changes_skips_matching_and_keeps_the_pair(monkeypatch, tmp_path):
+    """The family tapped Replace and send without changing anything: the new row takes over
+    the old row's candidate pair and its open duplicate task, is not matched again, and
+    gets one low-priority task."""
+    from review.match import run_matching
+    ident = pyrage.x25519.Identity.generate()
+    p = app_payload(kids=(("Ana", 4, "girl"), ("Luis", 7, "boy")))
+    other = app_payload(first="Jose", kids=(("Ana", 4, "girl"), ("Luis", 7, "boy")))  # same phone, address and children: a certain duplicate
+    rows = {"2026": [row("TCC-26-AAAAA", "2026-10-20T10:00:00Z", ident, json.dumps(p)), row("TCC-26-XXXXX", "2026-10-20T10:30:00Z", ident, json.dumps(other))], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
     sync.pull(con)
-    old = con.execute("SELECT status FROM applications WHERE id='TCC-26-AAAAA'").fetchone()[0]
-    new = con.execute("SELECT status, family_id, supersedes FROM applications WHERE id='TCC-26-BBBBB'").fetchone()
-    assert old == "superseded"
-    assert (new[0], new[1], new[2]) == ("accepted", "fam-1", "TCC-26-AAAAA")
-    assert con.execute("SELECT status FROM tasks WHERE app_id='TCC-26-AAAAA'").fetchone()[0] == "dismissed"
-    stats = run_matching(con, "2026", use_judge=False, include_all=True)
-    assert stats["pairs"] == 0  # the superseded row is not a candidate against its own edit
+    stats = run_matching(con, "2026", use_judge=False)
+    assert stats["pairs"] == 1 and len(open_tasks(con, kind="resolve_duplicate")) == 1
+    supersede_on_server(srv, "TCC-26-AAAAA", row("TCC-26-BBBBB", "2026-10-20T11:00:00Z", ident, json.dumps(p), supersedes="TCC-26-AAAAA"))
+    sync.pull(con)
+    assert local(con, "TCC-26-BBBBB")["status"] == "matched" and local(con, "TCC-26-AAAAA")["status"] == "superseded"
+    c = con.execute("SELECT app_a, app_b, verdict FROM candidates").fetchall()
+    assert [tuple(x) for x in c] == [("TCC-26-BBBBB", "TCC-26-XXXXX", "same")]
+    dup = open_tasks(con, kind="resolve_duplicate")
+    assert len(dup) == 1 and dup[0]["app_id"] == "TCC-26-BBBBB"
+    (t,) = open_tasks(con, kind="review_edit")
+    assert t["title"] == "Resent without changes" and t["app_id"] == "TCC-26-BBBBB" and "was matched" in t["detail"]
+    stats = run_matching(con, "2026", use_judge=False)
+    assert stats["apps"] == 0 and stats["pairs"] == 0  # nothing new to examine, nothing re-scored
+    assert len(open_tasks(con)) == 2
+
+
+def test_tasks_from_the_other_side_of_a_pair_are_dismissed_and_the_pair_voided(monkeypatch, tmp_path):
+    from review.db import add_task
+    from review.match import run_matching
+    ident = pyrage.x25519.Identity.generate()
+    kids = (("Ana", 4, "girl"), ("Luis", 7, "boy"))
+    rows = {"2026": [row("TCC-26-AAAAA", "2026-10-20T10:00:00Z", ident, json.dumps(app_payload(kids=kids))),
+                     row("TCC-26-XXXXX", "2026-10-20T10:30:00Z", ident, json.dumps(app_payload(first="Jose", kids=kids)))], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    sync.pull(con); run_matching(con, "2026", use_judge=False)
+    cid = con.execute("SELECT id FROM candidates").fetchone()[0]
+    add_task(con, "review_match", "asked from the other side", app_id="TCC-26-XXXXX", candidate_id=cid); con.commit()
+    assert len(open_tasks(con)) == 2
+    supersede_on_server(srv, "TCC-26-AAAAA", row("TCC-26-BBBBB", "2026-10-20T11:00:00Z", ident, json.dumps(app_payload(street="9 Pine", kids=kids)), supersedes="TCC-26-AAAAA"))
+    sync.pull(con)
+    assert open_tasks(con) == []
+    assert {r[0] for r in con.execute("SELECT resolution FROM tasks")} == {"application was edited"}
+    assert con.execute("SELECT verdict, decided_by FROM candidates WHERE id=?", (cid,)).fetchone()[:] == ("void", "system")
+    stats = run_matching(con, "2026", use_judge=False)
+    assert stats["pairs"] == 1  # a fresh pair for the replacement, one task
+    assert [t["app_id"] for t in open_tasks(con, kind="resolve_duplicate")] == ["TCC-26-BBBBB"]
+
+
+def test_superseded_row_arriving_after_its_replacement_is_dead_on_arrival(monkeypatch, tmp_path):
+    from review.match import run_matching
+    ident = pyrage.x25519.Identity.generate(); other = pyrage.x25519.Identity.generate(); third = pyrage.x25519.Identity.generate()
+    rows = {"2026": [
+        row("TCC-26-AAAAA", "2026-10-20T10:00:00Z", other, json.dumps(app_payload())),   # unreadable here for now; an older worker left its status 'new'
+        row("TCC-26-BBBBB", "2026-10-20T11:00:00Z", ident, json.dumps(app_payload(street="2 Oak")), supersedes="TCC-26-AAAAA"),
+        row("TCC-26-CCCCC", "2026-10-20T12:00:00Z", third, json.dumps(app_payload(first="Eva")), status="superseded"),  # replaced on the server; its edit never reached us
+    ], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    assert sync.pull(con) == (1, 2)
+    assert local(con, "TCC-26-BBBBB")["status"] == "new" and local(con, "TCC-26-BBBBB")["prior_status"] is None
+    # An unreadable row the server already superseded asks nobody for anything.
+    assert sync.failed_ids(con, "2026") == ["TCC-26-AAAAA"]
+    assert [t["title"] for t in open_tasks(con, kind="decrypt_error")] == ["Could not read submission TCC-26-AAAAA"]
+    # The key arrives: the old row is stored dead, because its replacement is already here.
+    monkeypatch.setattr(sync, "load_identities", lambda: [ident, other, third])
+    assert sync.retry_failed(con, "2026") == (1, 0, 0)
+    assert (local(con, "TCC-26-AAAAA")["status"], local(con, "TCC-26-AAAAA")["server_status"]) == ("superseded", "superseded")
+    sync.reset_cursor(con, "2026"); sync.pull(con)
+    assert local(con, "TCC-26-CCCCC")["status"] == "superseded"
+    assert con.execute("SELECT detail FROM events WHERE kind='superseded' AND ref='TCC-26-CCCCC'").fetchone()[0] == "replaced on the server"
+    stats = run_matching(con, "2026", use_judge=False)
+    assert stats["apps"] == 1 and stats["pairs"] == 0
+    assert sync.push_statuses(con) == 1 and [p[0] for p in srv.patches] == ["TCC-26-BBBBB"]
+
+
+def test_second_mac_inherits_decisions_and_pushes_only_its_own_changes(monkeypatch, tmp_path):
+    from review.match import run_matching, set_decision
+    ident = pyrage.x25519.Identity.generate()
+    rows = {"2026": [row(f"TCC-{x}", f"2026-10-20T1{i}:00:00Z", ident, json.dumps(app_payload(first=x, phone=f"530555010{i}", street=f"{i} Elm"))) for i, x in enumerate("ABC")], "preview": []}
+    conA, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    long_note = "  traiga comprobante de domicilio  " + "x" * 300
+    assert sync.pull(conA) == (3, 0)
+    run_matching(conA, "2026", use_judge=False)
+    set_decision(conA, "TCC-A", "accepted", "ok"); set_decision(conA, "TCC-B", "needs_info", long_note)
+    assert sync.push_statuses(conA) == 3
+    note200 = long_note.strip()[:200]
+    assert srv.status("TCC-A") == ("accepted", "ok") and srv.status("TCC-B") == ("needs_info", note200) and srv.status("TCC-C") == ("fetched", "")
+    assert sync.push_statuses(conA) == 0
+    # A second Mac with a fresh database pulls the same server: it inherits the decisions.
+    conB = connect(tmp_path / "b.sqlite")
+    assert sync.pull(conB) == (3, 0)
+    a, b, c = local(conB, "TCC-A"), local(conB, "TCC-B"), local(conB, "TCC-C")
+    assert (a["status"], a["note"], a["server_status"], a["server_note"]) == ("accepted", "ok", "accepted", "ok")
+    assert (b["status"], b["note"]) == ("needs_info", note200)
+    assert (c["status"], c["note"], c["server_status"]) == ("new", "", "fetched")
+    run_matching(conB, "2026", use_judge=False)
+    before = len(srv.patches)
+    assert sync.push_statuses(conB) == 0 and len(srv.patches) == before  # nothing to say: nothing changed here
+    assert srv.status("TCC-A") == ("accepted", "ok") and srv.status("TCC-B") == ("needs_info", note200)
+    # One decision on the second Mac: only that row goes.
+    set_decision(conB, "TCC-C", "declined", "")
+    assert sync.push_statuses(conB) == 1 and srv.patches[before:] == [("TCC-C", "declined", "")]
+    # A row this Mac never decided is never pushed over a server decision, even with a stale local status.
+    conB.execute("UPDATE applications SET status='matched', note='' WHERE id='TCC-A'"); conB.commit()
+    assert sync.push_statuses(conB) == 0 and srv.status("TCC-A") == ("accepted", "ok")
+    # The first Mac's cache says C is fetched: push sends nothing; resync brings the decision in.
+    assert sync.push_statuses(conA) == 0
+    st = sync.resync(conA)
+    assert st["inherited"] == 1 and st["refreshed"] == 3 and st["missing"] == 0
+    c = local(conA, "TCC-C")
+    assert (c["status"], c["server_status"]) == ("declined", "declined")
+    # A different local decision stands unless --overwrite is asked for.
+    set_decision(conB, "TCC-A", "declined", "no")
+    assert sync.resync(conB)["overwritten"] == 0 and local(conB, "TCC-A")["status"] == "declined"
+    assert sync.resync(conB, overwrite=True)["overwritten"] == 1
+    assert (local(conB, "TCC-A")["status"], local(conB, "TCC-A")["note"]) == ("accepted", "ok")
+    assert sync.push_statuses(conB) == 0
+
+
+def test_push_sends_note_changes_and_never_touches_superseded_rows(monkeypatch, tmp_path):
+    from review.match import run_matching, set_decision, set_note
+    ident = pyrage.x25519.Identity.generate()
+    rows = {"2026": [row("TCC-A", "2026-10-20T10:00:00Z", ident, json.dumps(app_payload())),
+                     row("TCC-B", "2026-10-20T11:00:00Z", ident, json.dumps(app_payload(first="Eva", phone="5305550199", street="4 Fir")))], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    sync.pull(con); run_matching(con, "2026", use_judge=False)
+    set_decision(con, "TCC-A", "needs_info", "uno")
+    assert sync.push_statuses(con) == 2 and srv.status("TCC-A") == ("needs_info", "uno")
+    set_decision(con, "TCC-A", "needs_info", "dos")
+    assert sync.push_statuses(con) == 1 and srv.patches[-1] == ("TCC-A", "needs_info", "dos")
+    set_note(con, "TCC-A", "tres")
+    assert sync.push_statuses(con) == 1 and srv.status("TCC-A") == ("needs_info", "tres") and local(con, "TCC-A")["status"] == "needs_info"
+    assert sync.push_statuses(con) == 0
+    # 'superseded' is the server's word: a row marked so here is never sent.
+    con.execute("UPDATE applications SET status='superseded' WHERE id='TCC-A'"); con.commit()
+    n = len(srv.patches)
+    assert sync.push_statuses(con) == 0 and len(srv.patches) == n
+    # The family replaced B on the server since the last pull: the worker answers 409, the
+    # local row is retired, the push goes on, and nothing on the server moved.
+    supersede_on_server(srv, "TCC-B", row("TCC-B2", "2026-10-21T11:00:00Z", ident, json.dumps(app_payload(first="Eva", phone="5305550199", street="5 Fir")), supersedes="TCC-B"))
+    set_decision(con, "TCC-B", "accepted", "")
+    assert sync.push_statuses(con) == 0
+    assert srv.patches[-1] == ("TCC-B", "accepted", "") and srv.status("TCC-B") == ("superseded", "")
+    b = local(con, "TCC-B")
+    assert (b["status"], b["server_status"]) == ("superseded", "superseded")
+    assert con.execute("SELECT detail FROM events WHERE kind='superseded' AND ref='TCC-B'").fetchone()[0] == "replaced by TCC-B2"
+    assert con.execute("SELECT COUNT(*) FROM events WHERE kind='push_skipped' AND ref='TCC-B'").fetchone()[0] == 1
+    assert sync.pull(con) == (1, 0) and local(con, "TCC-B2")["status"] == "new"
+
+
+def test_server_status_map_covers_every_console_status():
+    from review.console import FILTER_STATUSES
+    worker_words = {"new", "fetched", "needs_info", "accepted", "declined", "duplicate", "out_of_area", "superseded"}  # STATUSES in worker/src/index.js
+    assert set(FILTER_STATUSES) <= set(sync.SERVER_STATUS)
+    assert set(sync.SERVER_STATUS.values()) <= worker_words
+    assert set(sync.DECIDED) <= worker_words and "fetched" not in sync.DECIDED and "new" not in sync.DECIDED
+
+
+def test_cli_resync_reports_counts(monkeypatch, tmp_path, capsys):
+    from review.match import set_decision
+    ident = pyrage.x25519.Identity.generate()
+    rows = {"2026": [row("TCC-A", "2026-10-20T10:00:00Z", ident, json.dumps(app_payload()), status="accepted", note="ok")], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    monkeypatch.setattr(cli, "connect", lambda: con)
+    sync.pull(con)
+    assert (local(con, "TCC-A")["status"], local(con, "TCC-A")["note"]) == ("accepted", "ok")  # seeded from the server
+    set_decision(con, "TCC-A", "declined", "")
+    cli.main(["resync"])
+    assert "0 overwritten" in capsys.readouterr().out and local(con, "TCC-A")["status"] == "declined"
+    cli.main(["resync", "--overwrite", "--season", "2026"])
+    assert "1 overwritten" in capsys.readouterr().out and local(con, "TCC-A")["status"] == "accepted"
+    assert sync.push_statuses(con) == 0

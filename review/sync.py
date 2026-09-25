@@ -16,12 +16,20 @@ from zoneinfo import ZoneInfo
 import pyrage
 
 from .db import add_task, connect, get_meta, set_meta, log, now
-from .normalize_app import normalize_payload
+from .normalize_app import changed_fields, normalize_payload
 from .paths import CONFIG, KEY_DIR
 
 FAILED_CAP = 5000  # ids kept per season in meta failed:<season>; older ones fall off the front
 ID_RE = re.compile(r"[A-Z0-9-]+")
 ERROR_TITLE = "Could not read submission {sid}"
+MAX_NOTE = 200
+# Statuses the worker holds that are decisions. A pull seeds a local row from them, so a
+# second Mac inherits what the first decided instead of starting from 'new'.
+DECIDED = ("accepted", "declined", "duplicate", "out_of_area", "needs_info", "superseded")
+# Local statuses that mean "nobody on this Mac has decided yet".
+UNDECIDED = ("new", "matched")
+# Local statuses that count as a decision when an edit replaces the application.
+LOCAL_DECISIONS = ("accepted", "hold", "declined", "duplicate", "out_of_area", "needs_info")
 
 
 class ReviewSetupError(RuntimeError):
@@ -74,6 +82,18 @@ def api(method, path, body=None, headers=None):
                                  headers={"authorization": f"Bearer {admin_token()}", "content-type": "application/json", "user-agent": "truckee-cares-review/1", **(headers or {})})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
+
+
+def fetch_status(timeout=5):
+    """GET /api/status, no token: the season, dates, mode and gate as the deployed Worker
+    sees them. The console shows it next to this Mac's config/season.json."""
+    cfg = load_config()
+    req = urllib.request.Request(cfg["api_base"] + "/api/status", headers={"user-agent": "truckee-cares-review/1"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read())
+    if not isinstance(data, dict):
+        raise ValueError("status is not an object")
+    return data
 
 
 def parse_when(text, tz):
@@ -166,16 +186,102 @@ def forget_failed(con, sid):
 
 # --- pulling ----------------------------------------------------------------------------
 
+def server_fields(item):
+    """(status, note) as the worker holds them for one row. An older worker sends no note."""
+    status = str(item.get("status") or "new")
+    note = str(item.get("note") or "").strip()[:MAX_NOTE]
+    return status, note
+
+
+def retire_row(con, old_id, reason):
+    """The old side of an edit leaves every queue: its open tasks are dismissed, including
+    tasks raised from the other side of a pair that involves it, and those pairs are voided
+    so a person is never asked about a dead application."""
+    con.execute("""UPDATE tasks SET status='dismissed', resolved_at=?, resolution=?
+                   WHERE status='open' AND (app_id=? OR candidate_id IN (SELECT id FROM candidates WHERE app_a=? OR app_b=?))""",
+                (now(), reason, old_id, old_id, old_id))
+    con.execute("UPDATE candidates SET verdict='void', decided_by='system', decided_at=? WHERE (app_a=? OR app_b=?) AND IFNULL(verdict,'')!='void'",
+                (now(), old_id, old_id))
+
+
+def transfer_row(con, old_id, new_id):
+    """A resend that changed nothing: the new row takes over the old row's candidate pairs
+    (with their verdicts, human ones included) and its open tasks, so nothing the board was
+    asked or has answered is lost and the judge is not billed again."""
+    for c in con.execute("SELECT id, app_a, app_b FROM candidates WHERE app_a=? OR app_b=?", (old_id, old_id)).fetchall():
+        other = c["app_b"] if c["app_a"] == old_id else c["app_a"]
+        lo, hi = sorted([new_id, other])
+        if other == new_id or con.execute("SELECT 1 FROM candidates WHERE app_a=? AND app_b=?", (lo, hi)).fetchone():
+            con.execute("UPDATE candidates SET verdict='void', decided_by='system', decided_at=? WHERE id=?", (now(), c["id"]))
+            continue
+        con.execute("UPDATE candidates SET app_a=?, app_b=? WHERE id=?", (lo, hi, c["id"]))
+    con.execute("UPDATE tasks SET app_id=? WHERE app_id=? AND status='open'", (new_id, old_id))
+
+
+def mark_superseded(con, old_id, new_id=None):
+    """The server replaced old_id (the applicant edited it). Local status and the cached
+    server status both say so; push never sends anything for it again."""
+    con.execute("UPDATE applications SET status='superseded', server_status='superseded', updated_at=? WHERE id=?", (now(), old_id))
+    log(con, "superseded", old_id, f"replaced by {new_id}" if new_id else "replaced on the server")
+
+
+def edit_task(con, sid, old, changed):
+    """One task for the person who decided on the old row: what the applicant changed,
+    and, for needs_info, what we had asked for."""
+    prior = old["status"]
+    what = "Changed: " + (", ".join(changed) if changed else "nothing that matters")
+    tail = f" Replaces {old['id']} (was {prior})."
+    if prior == "needs_info":
+        title = "Answered needs_info by editing"
+        detail = f"We asked: {old['note'] or '(no note)'}\n{what}.{tail} Check that the edit covers it, then decide. If not, set needs_info again with a note."
+    else:
+        title = f"Edited after {prior}: re-check"
+        detail = f"{what}.{tail}" + (f" Old note: {old['note']}" if old["note"] else "") + " Compare with the old application and decide again."
+    add_task(con, "review_edit", title, app_id=sid, detail=detail)
+
+
+def apply_edit(con, sid, payload, old):
+    """A replacement arrived and the row it replaces is on this Mac. The old row leaves the
+    queue. The new row keeps the family, records what the old row's decision was, and
+    starts over as 'new' so it is matched and looked at again; a decision reached elsewhere
+    (the server already holds one for the new row) is kept as is. A resend that changed
+    nothing skips matching: it takes over the old row's pairs and tasks and gets one
+    low-priority task instead."""
+    changed = changed_fields(old["payload"], payload)
+    prior, old_note = old["status"], old["note"] or ""
+    row = con.execute("SELECT status FROM applications WHERE id=?", (sid,)).fetchone()
+    decided_elsewhere = row["status"] in DECIDED
+    con.execute("UPDATE applications SET family_id=?, prior_status=?, prior_note=? WHERE id=?", (old["family_id"], prior, old_note, sid))
+    if changed:
+        retire_row(con, old["id"], "application was edited")
+        if not decided_elsewhere and prior in LOCAL_DECISIONS:
+            edit_task(con, sid, old, changed)
+    else:
+        transfer_row(con, old["id"], sid)
+        if not decided_elsewhere:
+            if prior != "new":  # the old row was matched already; its pairs came along, so matching is not repeated
+                con.execute("UPDATE applications SET status='matched', updated_at=? WHERE id=?", (now(), sid))
+            add_task(con, "review_edit", "Resent without changes", app_id=sid,
+                     detail=f"The applicant sent {old['id']} again without changing anything (it was {prior}" + (f", note: {old_note}" if old_note else "") + "). Set the status again if it still applies.")
+    mark_superseded(con, old["id"], sid)
+    log(con, "edit", sid, f"replaces {old['id']} (was {prior}); changed: " + (", ".join(changed) or "nothing"))
+
+
 def store_item(con, item, season, identities, cfg, preview, failed):
     """One server row into the local database. Returns 'new', 'exists', 'failed' or
     'skipped' (no id). `failed` is the season's failed-id set (a dict, insertion ordered),
     kept current in place: a row that cannot be read joins it; a row that reads on a later
-    try leaves it and its error task is closed."""
+    try leaves it and its error task is closed.
+
+    The worker's status and note are recorded as server_status and server_note. When the
+    worker already holds a decision (another Mac pushed it), the local row starts from that
+    decision instead of 'new', so pushing from this Mac changes nothing on the server."""
     sid = str(item.get("id") or "")
     created = str(item.get("created_at") or "")
     if not sid:
         return "skipped"
     result = "exists"
+    srv_status, srv_note = server_fields(item)
     if not con.execute("SELECT 1 FROM applications WHERE id=?", (sid,)).fetchone():
         stage = "decrypt_error"
         try:
@@ -188,23 +294,33 @@ def store_item(con, item, season, identities, cfg, preview, failed):
             lang = item.get("lang")
             lang = lang if lang in ("en", "es") else "en"
             supersedes = item.get("supersedes") or None
-            con.execute("INSERT INTO applications(id,season,source,submitted_at,lang,status,payload,norm,server_status,updated_at,supersedes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                        (sid, season, "web", created, lang, "new", json.dumps(payload, ensure_ascii=False), json.dumps(norm), item.get("status"), now(), supersedes))
+            local = srv_status if srv_status in DECIDED else "new"
+            con.execute("INSERT INTO applications(id,season,source,submitted_at,lang,status,note,payload,norm,server_status,server_note,updated_at,supersedes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (sid, season, "web", created, lang, local, srv_note, json.dumps(payload, ensure_ascii=False), json.dumps(norm), srv_status, srv_note, now(), supersedes))
             if supersedes:
-                # An edit replaces the earlier application: it leaves the queue, and the new
-                # one inherits its family and any decision already made.
-                old = con.execute("SELECT family_id, status FROM applications WHERE id=?", (supersedes,)).fetchone()
-                if old:
-                    inherit = old["status"] if old["status"] in ("accepted", "hold", "declined") else "new"
-                    con.execute("UPDATE applications SET family_id=?, status=? WHERE id=?", (old["family_id"], inherit, sid))
-                    con.execute("UPDATE applications SET status='superseded', updated_at=? WHERE id=?", (now(), supersedes))
-                    con.execute("UPDATE tasks SET status='dismissed', resolved_at=?, resolution='application was edited' WHERE app_id=? AND status='open'", (now(), supersedes))
-                    log(con, "superseded", supersedes, f"replaced by {sid}")
+                old = con.execute("SELECT id, family_id, status, note, payload FROM applications WHERE id=?", (supersedes,)).fetchone()
+                if old and old["status"] != "superseded":
+                    old = dict(old); old["payload"] = json.loads(old["payload"])
+                    apply_edit(con, sid, payload, old)
+                elif old:
+                    con.execute("UPDATE applications SET family_id=IFNULL(family_id, ?) WHERE id=?", (old["family_id"], sid))
+            if local == "superseded":
+                nxt = con.execute("SELECT id FROM applications WHERE supersedes=?", (sid,)).fetchone()
+                log(con, "superseded", sid, f"replaced by {nxt['id']}" if nxt else "replaced on the server")
+            else:
+                # The edit may already be here (this row failed to decrypt on an earlier pull, or
+                # the pages came out of order): then this row is the dead one.
+                nxt = con.execute("SELECT id FROM applications WHERE supersedes=?", (sid,)).fetchone()
+                if nxt:
+                    retire_row(con, sid, "application was edited")
+                    mark_superseded(con, sid, nxt["id"])
             result = "new"
         except Exception as e:  # keep going; a bad row becomes a task, not a wall
             result = "failed"
             msg = safe_error(e)
             log(con, stage, sid, msg)
+            if srv_status == "superseded":
+                return "failed"  # a dead row nobody needs to read: no task, not retried
             read_error_task(con, sid, msg)
             failed[sid] = None
     if result != "failed" and sid in failed:
@@ -352,19 +468,112 @@ def delete_failed(con, season):
 SERVER_STATUS = {"accepted": "accepted", "declined": "declined", "duplicate": "duplicate", "out_of_area": "out_of_area", "matched": "fetched", "new": "fetched", "hold": "fetched", "needs_info": "needs_info", "superseded": "superseded"}
 
 
+def http_body(e):
+    """The JSON body of an HTTPError, or {}."""
+    try:
+        data = json.loads(e.read())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def push_statuses(db=None):
+    """Send this Mac's decisions to the worker. Only rows whose status or note differ from
+    what the worker was last seen holding are sent. A row this Mac has not decided never
+    overwrites a decision another Mac pushed, and 'superseded' is never sent: the worker
+    sets that itself when an edit lands. A 409 from the worker means the family replaced
+    the row since the last pull; the local row is marked superseded and the push goes on.
+    Returns the number of rows sent."""
     con = db or connect()
     rows = con.execute("SELECT id, status, server_status, note, server_note FROM applications WHERE source='web'").fetchall()
     n = 0
     for r in rows:
+        srv = r["server_status"] or ""
+        if r["status"] == "superseded" or srv == "superseded":
+            continue
+        if r["status"] in UNDECIDED and srv in DECIDED:
+            continue  # not decided here; the server holds another Mac's decision
         want = SERVER_STATUS.get(r["status"], "fetched")
-        note = (r["note"] or "").strip()[:200]
-        if want != (r["server_status"] or "") or note != (r["server_note"] or ""):
+        note = (r["note"] or "").strip()[:MAX_NOTE]
+        if want == srv and note == (r["server_note"] or ""):
+            continue
+        try:
             api("PATCH", f"/api/admin/submissions/{r['id']}", {"status": want, "note": note})
-            con.execute("UPDATE applications SET server_status=?, server_note=? WHERE id=?", (want, note, r["id"]))
-            n += 1
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                raise
+            by = http_body(e).get("superseded_by")
+            by = by if isinstance(by, str) and ID_RE.fullmatch(by) else None
+            retire_row(con, r["id"], "application was edited")
+            mark_superseded(con, r["id"], by)
+            log(con, "push_skipped", r["id"], "replaced on the server; pull to get the new one")
+            continue
+        con.execute("UPDATE applications SET server_status=?, server_note=? WHERE id=?", (want, note, r["id"]))
+        n += 1
     con.commit()
     return n
+
+
+def resync(con, overwrite=False, season=None):
+    """Refresh server_status and server_note for every web row on this Mac from the
+    worker's admin list, season by season. A row the worker holds a decision for and this
+    Mac has not decided takes that decision (a second Mac catching up); with overwrite,
+    every row takes the worker's decision, even over a different local one. A row the
+    worker marks superseded is retired here. Returns counts."""
+    where, args = "source='web'", ()
+    if season:
+        where += " AND season=?"; args = (season,)
+    seasons = [r[0] for r in con.execute(f"SELECT DISTINCT season FROM applications WHERE {where}", args)]
+    stats = {"checked": 0, "refreshed": 0, "inherited": 0, "overwritten": 0, "superseded": 0, "missing": 0}
+    q = lambda s: urllib.parse.quote(str(s), safe="")  # noqa: E731
+    for s in seasons:
+        remote, since, since_id = {}, "", ""
+        while True:
+            data = api("GET", f"/api/admin/submissions?season={q(s)}&since={q(since)}&since_id={q(since_id)}")
+            items = data.get("items") or []
+            for it in items:
+                if isinstance(it, dict) and it.get("id"):
+                    remote[str(it["id"])] = it
+            before = (since, since_id)
+            if items:
+                since = str(data.get("next_since") or items[-1].get("created_at") or since)
+                since_id = str(data.get("next_id") or items[-1].get("id") or since_id)
+            if not items or not data.get("has_more") or (since, since_id) == before:
+                break
+        for r in con.execute("SELECT id, status, note FROM applications WHERE source='web' AND season=?", (s,)).fetchall():
+            stats["checked"] += 1
+            it = remote.get(r["id"])
+            if not it:
+                stats["missing"] += 1
+                log(con, "resync_missing", r["id"], "not on the server")
+                continue
+            srv_status, srv_note = server_fields(it)
+            con.execute("UPDATE applications SET server_status=?, server_note=? WHERE id=?", (srv_status, srv_note, r["id"]))
+            stats["refreshed"] += 1
+            if srv_status == "superseded":
+                if r["status"] != "superseded":
+                    nxt = con.execute("SELECT id FROM applications WHERE supersedes=?", (r["id"],)).fetchone()
+                    retire_row(con, r["id"], "application was edited")
+                    mark_superseded(con, r["id"], nxt["id"] if nxt else None)
+                    stats["superseded"] += 1
+            elif srv_status in DECIDED:
+                same = r["status"] == srv_status and (r["note"] or "") == srv_note
+                if r["status"] in UNDECIDED:
+                    con.execute("UPDATE applications SET status=?, note=?, updated_at=? WHERE id=?", (srv_status, srv_note, now(), r["id"]))
+                    log(con, "resync_inherited", r["id"], srv_status)
+                    stats["inherited"] += 1
+                elif overwrite and not same:
+                    con.execute("UPDATE applications SET status=?, note=?, updated_at=? WHERE id=?", (srv_status, srv_note, now(), r["id"]))
+                    log(con, "resync_overwritten", r["id"], f"{r['status']} -> {srv_status}")
+                    stats["overwritten"] += 1
+        con.commit()
+    if stats["inherited"] or stats["overwritten"]:
+        from .match import recompute_family
+        for fid in [x[0] for x in con.execute("SELECT DISTINCT family_id FROM applications WHERE family_id IS NOT NULL")]:
+            recompute_family(con, fid)
+    log(con, "resync", ",".join(seasons), json.dumps(stats))
+    con.commit()
+    return stats
 
 
 def preview_rows_in_window(con, cfg=None):

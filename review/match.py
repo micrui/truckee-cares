@@ -201,13 +201,29 @@ def is_preview(app):
     return app.get("season") == "preview"
 
 
+def latest(con, X):
+    """The live replacement of X when X was edited away: follows applications.supersedes
+    forward to the newest row in the chain. X itself when it is live or has no successor here."""
+    seen = set()
+    while X and X.get("status") == "superseded" and X["id"] not in seen:
+        seen.add(X["id"])
+        nxt = load_apps(con, "supersedes=?", (X["id"],))
+        if not nxt:
+            break
+        X = sorted(nxt, key=lambda a: str(a.get("submitted_at") or ""))[-1]
+    return X
+
+
 def link_family(con, A, B):
     """Put A and B in one family (creating it if needed). Continuity: seasons_served and
     trust come from accepted prior apps. The family ids are re-read from the database
     first, because an earlier pair in the same run may have linked one of them already.
     If both already belong to different families, the families are merged. Preview rows
-    never link."""
+    never link. A row the applicant edited away stands for its newest replacement."""
     if is_preview(A) or is_preview(B):
+        return None
+    A, B = latest(con, A), latest(con, B)
+    if A["id"] == B["id"] or A.get("status") == "superseded" or B.get("status") == "superseded":
         return None
     for X in (A, B):
         r = con.execute("SELECT family_id FROM applications WHERE id=?", (X["id"],)).fetchone()
@@ -251,27 +267,82 @@ def recompute_family(con, fid):
                 (seasons[0] if seasons else None, seasons[-1] if seasons else None, served, served - problems, fid))
 
 
+FINAL = ("accepted", "declined", "duplicate", "out_of_area")  # decisions that close the application's own tasks
+
+
+def live_row(con, app_id):
+    """The application, or a refusal: a row the applicant edited away takes no decision
+    (the worker refuses too); decide on its replacement. The refusal is logged first so
+    the dashboard's activity list shows it even after the request rolls back."""
+    cur = con.execute("SELECT id, status, family_id, note FROM applications WHERE id=?", (app_id,)).fetchone()
+    if not cur:
+        return None
+    if cur["status"] == "superseded":
+        nxt = con.execute("SELECT id FROM applications WHERE supersedes=?", (app_id,)).fetchone()
+        log(con, "decision_refused", app_id, "superseded"); con.commit()
+        raise ValueError(f"{app_id} was replaced by the applicant's edit; decide on {nxt['id'] if nxt else 'the newer application'} instead")
+    return cur
+
+
 def set_decision(con, app_id, status, note=""):
     """Record a decision. `note` is the short public line the applicant sees on the status
-    page (for needs_info: what we need from them). Keep it free of applicant details."""
-    con.execute("UPDATE applications SET status=?, updated_at=?, note=? WHERE id=?", (status, now(), (note or "").strip()[:200], app_id))
-    r = con.execute("SELECT family_id FROM applications WHERE id=?", (app_id,)).fetchone()
-    if r and r["family_id"]:
-        recompute_family(con, r["family_id"])
+    page (for needs_info: what we need from them). Keep it free of applicant details.
+    A final decision closes the application's own open tasks (address, notes, edit)."""
+    if status == "superseded":
+        raise ValueError("superseded is set by the server when an edit lands, not by hand")
+    cur = live_row(con, app_id)
+    if not cur:
+        return
+    note = (note or "").strip()[:200]
+    con.execute("UPDATE applications SET status=?, updated_at=?, note=? WHERE id=?", (status, now(), note, app_id))
+    if status in FINAL:
+        con.execute("UPDATE tasks SET status='done', resolved_at=?, resolution=? WHERE app_id=? AND status='open' AND kind IN ('verify_address','review_notes','review_edit')",
+                    (now(), f"decided: {status}", app_id))
+    if cur["family_id"]:
+        recompute_family(con, cur["family_id"])
     log(con, "decision", app_id, f"{status} {note}".strip())
     con.commit()
 
 
+def set_note(con, app_id, note):
+    """Change the public note and nothing else (the status stays)."""
+    cur = live_row(con, app_id)
+    if not cur:
+        return
+    note = (note or "").strip()[:200]
+    con.execute("UPDATE applications SET note=?, updated_at=? WHERE id=?", (note, now(), app_id))
+    log(con, "note", app_id, note)
+    con.commit()
+
+
 def resolve_candidate(con, cid, verdict):
-    """A human overrides or confirms a candidate pair."""
+    """A human overrides or confirms a candidate pair. Returns a short line for the task's
+    resolution. 'same' across seasons links the family; 'same' within one season also marks
+    one of the two 'duplicate' (the one not yet accepted, else the later one), so only one
+    can be accepted. A row that was edited away stands for its newest replacement."""
     c = con.execute("SELECT * FROM candidates WHERE id=?", (cid,)).fetchone()
     if not c:
-        return
+        return verdict
     A = load_apps(con, "id=?", (c["app_a"],)); B = load_apps(con, "id=?", (c["app_b"],))
     con.execute("UPDATE candidates SET verdict=?, decided_by='human', decided_at=? WHERE id=?", (verdict, now(), cid))
-    if verdict == "same" and A and B and A[0]["season"] != B[0]["season"]:
-        link_family(con, A[0], B[0])  # no-op for preview rows
+    outcome = verdict
+    if verdict == "same" and A and B:
+        A, B = latest(con, A[0]), latest(con, B[0])
+        if A["id"] != B["id"] and not is_preview(A) and not is_preview(B):
+            fid = link_family(con, A, B)
+            if A["season"] == B["season"] and fid:
+                if A["status"] == "accepted" and B["status"] != "accepted":
+                    keep, dup = A, B
+                elif B["status"] == "accepted" and A["status"] != "accepted":
+                    keep, dup = B, A
+                else:
+                    keep, dup = sorted([A, B], key=lambda x: (str(x.get("submitted_at") or ""), x["id"]))
+                if dup["status"] != "duplicate":
+                    set_decision(con, dup["id"], "duplicate", "")
+                log(con, "duplicate", dup["id"], f"same family as {keep['id']} (human)")
+                outcome = f"same family; {dup['id']} marked duplicate, {keep['id']} kept"
     con.commit()
+    return outcome
 
 
 def rejudge(con, season, workers=8):
@@ -279,7 +350,8 @@ def rejudge(con, season, workers=8):
     time). Updates the candidate, closes the placeholder task, and applies the verdict."""
     from concurrent.futures import ThreadPoolExecutor
     rows = con.execute("""SELECT c.id FROM candidates c JOIN applications a ON a.id=c.app_a JOIN applications b ON b.id=c.app_b
-                          WHERE c.verdict='unsure' AND c.decided_by='rule' AND (a.season=? OR b.season=?)""", (season, season)).fetchall()
+                          WHERE c.verdict='unsure' AND c.decided_by='rule' AND (a.season=? OR b.season=?)
+                          AND a.status!='superseded' AND b.status!='superseded'""", (season, season)).fetchall()
     ids = [r["id"] for r in rows]
     by_id = {}  # one dict per application, shared across its pairs, so links made by one pair are seen by the next
 

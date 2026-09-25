@@ -47,6 +47,8 @@ def run(argv=None):
     s = sub.add_parser("match", help="run matching for a season"); s.add_argument("--season"); s.add_argument("--no-judge", action="store_true")
     s.add_argument("--all", action="store_true", help="match every application of the season, not only new ones (e.g. an imported season)")
     sub.add_parser("push", help="push decision statuses to the server")
+    s = sub.add_parser("resync", help="refresh what the server holds for every application here; undecided rows take the server's decision (a second Mac catching up)"); s.add_argument("--season")
+    s.add_argument("--overwrite", action="store_true", help="also replace this Mac's decisions with the server's where they differ")
     s = sub.add_parser("rejudge", help="ask the judge about pairs left unsure by rule"); s.add_argument("--season", required=True); s.add_argument("--workers", type=int, default=8)
     sub.add_parser("console", help="open the local admin console").add_argument("--port", type=int, default=8789)
     sub.add_parser("stats", help="counts by season and status")
@@ -80,6 +82,10 @@ def run(argv=None):
     elif a.cmd == "push":
         from .sync import push_statuses
         print(f"pushed {push_statuses(con)} status changes")
+    elif a.cmd == "resync":
+        from .sync import resync
+        st = resync(con, overwrite=a.overwrite, season=a.season)
+        print("resync: " + ", ".join(f"{v} {k}" for k, v in st.items()))
     elif a.cmd == "console":
         from .console import serve
         serve(con, a.port)

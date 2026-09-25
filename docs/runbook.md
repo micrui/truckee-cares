@@ -137,13 +137,27 @@ and the board's short note: received, we need something from you, approved, not 
 year, duplicate, out of area, or replaced. Decisions made in the console reach the status
 page after `bin/review push`. To ask a family for something, choose `needs_info` and type
 a one-line note in their language with no personal details; the status page shows it with
-Text and Call buttons. A family who wants to change something taps "Edit and resend" on the same phone (the
+Text and Call buttons. The note belongs to `needs_info`: pressing Enter in the note field
+saves the note and keeps the status (it never accepts), and choosing any other status
+drops the old note unless you typed a new one for that decision, so an approved family
+never sees a stale "we need something" line. A family who wants to change something taps "Edit and resend" on the same phone (the
 answers come back from an encrypted copy only that phone can open) or fills the form out
 again from another phone; either way the new application replaces the old one. In the
 console the replacement keeps the family link but comes back as `new` with a
 `review_edit` task when the old one had already been decided, so nothing accepted slips
 through unread. The old code stays on the family's phone only until the replacement is
 sent; then the phone forgets it and shows the new one.
+
+**Superseded applications.** On the next pull the replaced application shows as
+`superseded` with a link to the newer one; its open tasks are dismissed, its candidate
+pairs voided, and it takes no more decisions (the console and the Worker both refuse).
+The replacement's card says what the old decision and note were ("before the edit"), and
+its `review_edit` task lists which fields changed, or says "Resent without changes", in
+which case matching is skipped and the old pairs carry over. Decide on the replacement;
+`push` marks it on the server and never touches the superseded row. Filter the
+applications list by `superseded` to see replaced rows. A row the family replaced on the
+server since your last pull is refused by `push` and marked superseded here; pull to get
+the new one.
 
 What the phone keeps, and for how long: the confirmation code and the copy key live in
 the browser's local storage. Safari on iPhone deletes that storage after seven days
@@ -184,7 +198,10 @@ pull` like any other replacement.
    - A `?preview` submission pulls and decrypts on each board Mac.
 5. During the window, every day or two: `bin/review pull && bin/review match`, then
    `bin/review console` and work the task list. Decide on each application:
-   accepted, hold, declined, duplicate, out_of_area. `bin/review push` when done.
+   accepted, hold, needs_info, declined, duplicate, out_of_area. `bin/review push` when
+   done. The console's dashboard shows the season and mode the deployed Worker has; if it
+   says this Mac's config differs, `git pull` before printing cards. On a second Mac,
+   `bin/review resync` before deciding, so the other Mac's decisions are here.
    `pull` fetches every server row it has not seen, 500 at a time, and reports how many it
    could not read. Those rows never hold up the rest; see "Undecryptable rows" below for
    what they mean and when to delete them. During the window, delete only rows you are

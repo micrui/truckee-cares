@@ -35,6 +35,54 @@ def child_records(v):
     return out
 
 
+def _kids(p):
+    return child_records(as_dict(p).get("children"))
+
+
+def _txt(v):
+    return as_str(v).strip()
+
+
+FIELD_VIEWS = [  # what an edit can change, by name, in the order a person would read them
+    ("name", lambda p: (_txt(as_dict(p.get("applicant")).get("first_name")), _txt(as_dict(p.get("applicant")).get("last_name")))),
+    ("phone", lambda p: N.phone(_txt(as_dict(p.get("applicant")).get("phone")))),
+    ("other phone", lambda p: N.phone(_txt(as_dict(p.get("applicant")).get("other_phone")))),
+    ("email", lambda p: _txt(as_dict(p.get("applicant")).get("email")).lower()),
+    ("other adult", lambda p: _txt(as_dict(p.get("applicant")).get("other_adult"))),
+    ("street", lambda p: _txt(as_dict(p.get("address")).get("street"))),
+    ("unit", lambda p: _txt(as_dict(p.get("address")).get("unit"))),
+    ("city", lambda p: _txt(as_dict(p.get("address")).get("city"))),
+    ("zip", lambda p: _txt(as_dict(p.get("address")).get("zip"))),
+    ("mailing", lambda p: tuple(_txt(as_dict(p.get("mailing")).get(k)) for k in ("street", "city", "zip"))),
+    ("adults", lambda p: _txt(as_dict(p.get("household")).get("adults"))),
+    ("adult coat sizes", lambda p: sorted(_txt(x) for x in (as_dict(p.get("household")).get("adult_coat_sizes") or []) if x is not None) if isinstance(as_dict(p.get("household")).get("adult_coat_sizes"), list) else []),
+    ("children count", lambda p: len(_kids(p))),
+    ("child names", lambda p: [c["first_name"].strip() for c in _kids(p)]),
+    ("child ages", lambda p: [c["age"] for c in _kids(p)]),
+    ("child sexes", lambda p: [c["sex"].strip() for c in _kids(p)]),
+    ("child coats", lambda p: [(bool(c.get("coat")), _txt(c.get("coat_size"))) for c in as_dict(p).get("children", []) if isinstance(c, dict)] if isinstance(as_dict(p).get("children"), list) else []),
+    ("programs", lambda p: sorted(k for k, v in as_dict(p.get("programs")).items() if v)),
+    ("helper", lambda p: tuple(_txt(as_dict(p.get("helper")).get(k)) for k in ("name", "phone", "org"))),
+    ("referral", lambda p: _txt(p.get("referral"))),
+    ("notes", lambda p: _txt(p.get("notes"))),
+]
+
+
+def changed_fields(old, new):
+    """Names of the fields that differ between two payloads (an application and the edit
+    that replaced it). Names only, never values, so the list can go into a task."""
+    old, new = as_dict(old), as_dict(new)
+    out = []
+    for name, view in FIELD_VIEWS:
+        try:
+            differs = view(old) != view(new)
+        except Exception:  # a malformed side counts as changed
+            differs = True
+        if differs:
+            out.append(name)
+    return out
+
+
 def normalize_payload(p):
     if not isinstance(p, dict):
         raise ValueError(f"payload is {type(p).__name__}, not an object")

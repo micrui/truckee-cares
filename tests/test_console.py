@@ -253,7 +253,9 @@ def test_decrypt_error_task_offers_delete_from_server(tmp_path, monkeypatch):
     con.commit()
     out = console.tasks_page(con, {})
     assert out.count("Delete from server") == 1
-    assert 'name="confirm" value="TCC-26-JUNK1"' in out and "<img" not in out
+    # The id must be typed, not echoed: an empty input with the id in the placeholder, and the two causes spelled out.
+    assert 'name="confirm"' in out and 'value="TCC-26-JUNK1"' not in out and "type TCC-26-JUNK1 to delete" in out
+    assert "Key mismatch" in out and "Junk or spam" in out and "<img" not in out
     tid = con.execute("SELECT id FROM tasks WHERE title='Could not read submission TCC-26-JUNK1'").fetchone()[0]
     con.close()
     calls = []
@@ -276,3 +278,116 @@ def test_decrypt_error_task_offers_delete_from_server(tmp_path, monkeypatch):
         assert sync.failed_ids(con, "2026") == ["TCC-26-OTHER"]
     finally:
         srv.shutdown(); srv.server_close()
+
+
+def post_form(port, path, body):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c.request("POST", path, body=body, headers={"host": f"127.0.0.1:{port}", "origin": f"http://127.0.0.1:{port}", "content-type": "application/x-www-form-urlencoded"})
+    r = c.getresponse(); r.read(); c.close()
+    return r
+
+
+def test_superseded_card_links_forward_and_takes_no_decision(tmp_path):
+    import pytest
+    from review.match import set_decision
+    con = connect(tmp_path / "t.sqlite")
+    p = {"applicant": {"first_name": "Rosa", "last_name": "Lopez"}, "address": {"street": "1 Elm", "city": "Truckee", "zip": "96161"}}
+    insert(con, "OLD", p, status="superseded"); insert(con, "NEW", p); insert(con, "ORPHAN", p)
+    con.execute("UPDATE applications SET supersedes='OLD', prior_status='accepted', prior_note='ok' WHERE id='NEW'")
+    con.execute("UPDATE applications SET supersedes='GONE' WHERE id='ORPHAN'")
+    con.commit()
+    out = console.app_page(con, "OLD")
+    assert "Replaced by" in out and 'href="/apps/NEW"' in out and "/decide" not in out and "decide on the newer application" in out
+    assert 'class="pill superseded"' in out
+    out = console.app_page(con, "NEW")
+    assert "Replaces" in out and 'href="/apps/OLD"' in out and "before the edit" in out and 'pill accepted' in out and "old note: ok" in out and "/apps/NEW/decide" in out
+    out = console.app_page(con, "ORPHAN")
+    assert "GONE" in out and "not on this Mac" in out and 'href="/apps/GONE"' not in out
+    out = console.apps_page(con, {"status": ["superseded"]})
+    assert 'href="/apps/OLD"' in out and 'href="/apps/NEW"' not in out and "<option selected>superseded</option>" in out
+    assert "superseded" in console.FILTER_STATUSES and "superseded" not in console.STATUSES
+    with pytest.raises(ValueError, match="NEW"):
+        set_decision(con, "OLD", "accepted")
+    assert con.execute("SELECT status FROM applications WHERE id='OLD'").fetchone()[0] == "superseded"
+    assert con.execute("SELECT COUNT(*) FROM events WHERE kind='decision_refused' AND ref='OLD'").fetchone()[0] == 1
+    con.close()
+    box = serve_in_thread(tmp_path / "t.sqlite"); srv, port = box["srv"], box["port"]
+    try:
+        r = post_form(port, "/apps/OLD/decide", "status=accepted&note=")
+        assert r.status == 303 and r.getheader("location").startswith("/?error=") and "replaced" in urllib.parse.unquote(r.getheader("location"))
+        con = connect(tmp_path / "t.sqlite")
+        assert con.execute("SELECT status FROM applications WHERE id='OLD'").fetchone()[0] == "superseded"
+        r = post_form(port, "/apps/NEW/decide", "status=accepted&note=")
+        assert r.status == 303 and con.execute("SELECT status FROM applications WHERE id='NEW'").fetchone()[0] == "accepted"
+    finally:
+        srv.shutdown(); srv.server_close()
+
+
+def test_note_field_enter_saves_only_the_note_and_an_old_note_does_not_ride_along(tmp_path):
+    con = connect(tmp_path / "t.sqlite")
+    insert(con, "N1", {"applicant": {"first_name": "Ana", "contact_lang": "es"}, "address": {"street": "1 Elm"}}, status="matched")
+    con.commit()
+    out = console.app_page(con, "N1")
+    hidden = out.index(f'value="{console.NOTE_SAVE}"'); first_real = out.index('value="accepted"')
+    assert hidden < first_real and 'class="vh"' in out[hidden - 80:hidden]  # the first submit button is the note-only one, so Enter never accepts
+    assert out.count(console.NOTE_RULE) == 2  # in the placeholder and under the field
+    assert out.index('<form method="post" action="/apps/N1/decide"') < hidden
+    con.close()
+    box = serve_in_thread(tmp_path / "t.sqlite"); srv, port = box["srv"], box["port"]
+    try:
+        con = connect(tmp_path / "t.sqlite")
+        state = lambda: tuple(con.execute("SELECT status, note FROM applications WHERE id='N1'").fetchone())  # noqa: E731
+        r = post_form(port, "/apps/N1/decide", f"status={console.NOTE_SAVE}&note=hola")
+        assert r.status == 303 and state() == ("matched", "hola")
+        assert con.execute("SELECT COUNT(*) FROM events WHERE kind='note' AND ref='N1'").fetchone()[0] == 1
+        post_form(port, "/apps/N1/decide", "status=needs_info&note=traiga+comprobante")
+        assert state() == ("needs_info", "traiga comprobante")
+        post_form(port, "/apps/N1/decide", "status=accepted&note=traiga+comprobante")  # the prefilled needs_info note is not kept
+        assert state() == ("accepted", "")
+        post_form(port, "/apps/N1/decide", "status=needs_info&note=otra+cosa")
+        assert state() == ("needs_info", "otra cosa")
+        post_form(port, "/apps/N1/decide", "status=accepted&note=recoja+el+12")  # a note typed for this decision is kept
+        assert state() == ("accepted", "recoja el 12")
+        post_form(port, "/apps/N1/decide", "status=hold&note=recoja+el+12")  # unchanged again: dropped
+        assert state() == ("hold", "")
+    finally:
+        srv.shutdown(); srv.server_close()
+
+
+def test_dashboard_shows_the_server_season_and_warns_when_config_differs(tmp_path, monkeypatch):
+    from review import sync
+    con = make_db(tmp_path)
+    cfg = {"season": "2026", "mode": "pickup", "opens": "2026-10-15T00:00:00", "closes": "2026-11-15T23:59:59", "api_base": "http://stub"}
+    monkeypatch.setattr(sync, "load_config", lambda: dict(cfg))
+    monkeypatch.setattr(console, "SERVER", {"info": None, "error": None, "at": None})
+    # Startup: the fetch fails, the console still runs and says so.
+    monkeypatch.setattr(sync, "fetch_status", lambda timeout=5: (_ for _ in ()).throw(OSError("no network")))
+    assert console.refresh_server_info() is None
+    out = console.dashboard(con)
+    assert "not reached" in out and "OSError" in out and "run git pull" not in out and "mode <b>pickup</b>" in out
+    assert "Bring this card on pickup day." in console.cards_page(con, "2026")  # this Mac's config
+    # The server agrees with this Mac.
+    info = {**{k: cfg[k] for k in console.DRIFT_KEYS}, "open": False, "reason": "not_open", "timezone": "America/Los_Angeles"}
+    monkeypatch.setattr(sync, "fetch_status", lambda timeout=5: dict(info))
+    assert console.refresh_server_info() == info
+    out = console.dashboard(con)
+    assert "season <b>2026</b>" in out and "mode <b>pickup</b>" in out and "closed (not_open)" in out and "run git pull" not in out and "card warn" not in out
+    # The server was switched to mail and this Mac has not pulled: loud, and the cards follow the server.
+    monkeypatch.setattr(sync, "fetch_status", lambda timeout=5: {**info, "mode": "mail", "open": True, "reason": "open"})
+    console.refresh_server_info()
+    out = console.dashboard(con)
+    assert "config on this Mac differs from the server; run git pull" in out and "differs: mode" in out and "card warn" in out and "mode <b>mail</b>" in out
+    assert console.config_drift(cfg, console.SERVER["info"]) == ["mode"]
+    assert "Your card will arrive by mail." in console.cards_page(con, "2026")
+    assert "Bring this card on pickup day." in console.cards_page(con, "2026", mode="pickup")  # an explicit mode still wins
+    assert "<img" not in out
+
+
+def test_labels_fall_back_to_the_home_city_and_zip_for_a_bare_po_box(tmp_path):
+    con = connect(tmp_path / "t.sqlite")
+    insert(con, "P1", {"applicant": {"first_name": "Luis", "last_name": "Prueba"}, "address": {"street": "12 Oak St", "unit": "B", "city": "Truckee", "zip": "96161"}, "mailing": {"street": "PO Box 55", "city": "", "zip": None}}, status="accepted", lang="en")
+    insert(con, "P2", {"applicant": {"first_name": "Ana", "last_name": "Prueba"}, "address": {"street": "1 Elm", "city": "Truckee", "zip": "96161"}, "mailing": {"street": "PO Box 9", "city": "Soda Springs", "zip": "95728"}}, status="accepted", lang="en")
+    rows = [r.split(",") for r in console.export_csv(con, "2026", "labels").lstrip("﻿").splitlines()]
+    by_id = {r[0]: r for r in rows[1:]}
+    assert by_id["P1"] == ["P1", "Luis Prueba", "PO Box 55", "", "Truckee", "96161", "en"]
+    assert by_id["P2"] == ["P2", "Ana Prueba", "PO Box 9", "", "Soda Springs", "95728", "en"]

@@ -17,27 +17,62 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .db import log, now
-from .match import load_apps, resolve_candidate, set_decision, run_matching
+from .match import load_apps, resolve_candidate, set_decision, set_note, run_matching
 from .paths import ROOT
 from .sync import error_task_id
 
 E = lambda v: html.escape("" if v is None else str(v))  # noqa: E731
 PROGRAMS = ("food", "toys", "coats")
-STATUSES = ("new", "matched", "accepted", "hold", "needs_info", "declined", "duplicate", "out_of_area")
+STATUSES = ("new", "matched", "accepted", "hold", "needs_info", "declined", "duplicate", "out_of_area")  # what a person may set
+FILTER_STATUSES = STATUSES + ("superseded",)  # what the list can show; superseded is set by the server, never by hand
+NOTE_SAVE = "__note__"  # the decide form's first (hidden) button: Enter in the note field saves the note and keeps the status
 CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
 CSS = (ROOT / "site" / "static" / "css" / "site.css").read_text()
 EXTRA = """
 .wrap{max-width:1100px} table{width:100%;border-collapse:collapse;font-size:.92rem} th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.8rem;font-weight:700;background:var(--card)} .pill.accepted{background:var(--ok);color:#fff}
 .pill.duplicate,.pill.declined,.pill.out_of_area{background:var(--err);color:#fff} .pill.new{background:#e0b100;color:#000}
+.pill.superseded{background:var(--muted);color:#fff;text-decoration:line-through}
 .pair{display:grid;grid-template-columns:1fr 1fr;gap:12px} .pair .card{margin:0} form.inline{display:inline} .btn.small{min-height:36px;padding:4px 12px;font-size:.9rem}
 nav a{margin-right:10px} .kv dt{color:var(--muted);font-size:.85rem;margin-top:6px} .kv dd{margin:0} .card.error{border:1px solid var(--err)}
+.card.warn{border:2px solid #e0b100} .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0;padding:0;margin:-1px}
+.hint{color:var(--muted);font-size:.85rem;margin-top:4px}
 """
 CARD_TEXT = {  # season mode -> language -> what the pickup card says
     "pickup": {"en": "Bring this card on pickup day.", "es": "Traiga esta tarjeta el día de la entrega."},
     "mail": {"en": "Your card will arrive by mail.", "es": "Su tarjeta llegará por correo."},
     "deliver": {"en": "A volunteer will bring your gifts.", "es": "Un voluntario le llevará los regalos."},
 }
+NOTE_RULE = "Enter saves the note only. The note belongs to needs_info: choosing another status clears it unless you type a new one."
+
+# What the deployed Worker says about itself (GET /api/status), fetched once when the
+# console starts. The dashboard compares it with this Mac's config/season.json.
+SERVER = {"info": None, "error": None, "at": None}
+DRIFT_KEYS = ("season", "mode", "opens", "closes")
+
+
+def refresh_server_info():
+    from .sync import fetch_status
+    try:
+        SERVER["info"] = fetch_status(); SERVER["error"] = None
+    except Exception as e:  # the console works without the server; the dashboard says so
+        SERVER["info"] = None; SERVER["error"] = f"{type(e).__name__}: {e}"[:200]
+    SERVER["at"] = now()
+    return SERVER["info"]
+
+
+def config_drift(cfg, info):
+    """Keys where config/season.json on this Mac disagrees with the deployed Worker."""
+    if not isinstance(info, dict):
+        return []
+    return [k for k in DRIFT_KEYS if str(d(cfg).get(k) or "") != str(info.get(k) or "")]
+
+
+def server_mode():
+    """The season mode as the Worker has it, when the console could reach it."""
+    info = SERVER.get("info")
+    mode = info.get("mode") if isinstance(info, dict) else None
+    return mode if mode in CARD_TEXT else None
 
 
 def d(v):
@@ -101,9 +136,29 @@ def app_card_body(a, con):
     kids = "".join(f"<li>{E(c.get('first_name'))} · {E(c.get('age', '?'))} · {E(c.get('sex'))}{(' · coat ' + E(c.get('coat_size'))) if c.get('coat') else ''}</li>" for c in dl(p.get("children")))
     fam = con.execute("SELECT * FROM families WHERE id=?", (a.get("family_id"),)).fetchone() if a.get("family_id") else None
     coats = sl(hh.get("adult_coat_sizes"))
+    superseded = a.get("status") == "superseded"
+    edits = ""
+    if a.get("supersedes"):
+        have = con.execute("SELECT 1 FROM applications WHERE id=?", (a["supersedes"],)).fetchone()
+        link = f'<a href="/apps/{E(a["supersedes"])}">{E(a["supersedes"])}</a>' if have else f'{E(a["supersedes"])} <span class="muted">(not on this Mac)</span>'
+        edits += f"<dt>Replaces</dt><dd>{link} (edited by the applicant)"
+        edits += (f' · before the edit: {pill(a.get("prior_status"))}' + (f' · old note: {E(a.get("prior_note"))}' if a.get("prior_note") else "")) if a.get("prior_status") else ""
+        edits += "</dd>"
+    newer = con.execute("SELECT id, submitted_at FROM applications WHERE supersedes=? ORDER BY submitted_at DESC", (a["id"],)).fetchone() if superseded else None
+    if superseded:
+        edits += "<dt>Replaced by</dt><dd>" + (f'<a href="/apps/{E(newer["id"])}">{E(newer["id"])}</a> on {E(str(newer["submitted_at"] or "")[:16])}' if newer else '<span class="muted">a later edit not on this Mac</span>') + " (edited by the applicant)</dd>"
+    if superseded:
+        actions = "<p class='muted'>Replaced by the applicant's edit. No decisions here; decide on the newer application.</p>"
+    else:
+        actions = f"""<form method="post" action="/apps/{E(a['id'])}/decide" class="inline">
+<button type="submit" class="vh" name="status" value="{NOTE_SAVE}" tabindex="-1" aria-hidden="true">Save note</button>
+{''.join(f'<button type="submit" class="btn btn-ghost small" name="status" value="{s}">{s}</button> ' for s in ['accepted', 'hold', 'needs_info', 'declined', 'duplicate', 'out_of_area'])}
+<div style="margin-top:6px"><input name="note" value="{E(a.get('note') or '')}" maxlength="200" placeholder="note the family sees on the status page, in their language ({E((p.get('applicant') or {}).get('contact_lang') or a.get('lang') or 'es')}); no personal details. {E(NOTE_RULE)}" style="width:100%;min-height:36px;font:inherit;padding:4px 8px">
+<div class="hint">{E(NOTE_RULE)}</div></div>
+</form>"""
     return f"""<div class="card"><h3><a href="/apps/{E(a['id'])}">{E(a['id'])}</a> {pill(a.get('status'))} <span class="muted">{E(a.get('season'))} · {E(a.get('source'))} · {E(str(a.get('submitted_at') or '')[:16])}</span></h3>
 <dl class="kv">
-{('<dt>Replaces</dt><dd><a href="/apps/' + E(a.get('supersedes')) + '">' + E(a.get('supersedes')) + '</a> (edited by the applicant)</dd>') if a.get('supersedes') else ''}
+{edits}
 <dt>Head of household</dt><dd><strong>{name_of(ap)}</strong>{(' · other adult: ' + E(ap.get('other_adult'))) if ap.get('other_adult') else ''}</dd>
 <dt>Phone</dt><dd>{E(ap.get('phone'))}{' (ok to text)' if ap.get('can_text') else ''}{(' · ' + E(ap.get('other_phone'))) if ap.get('other_phone') else ''}{(' · ' + E(ap.get('email'))) if ap.get('email') else ''}</dd>
 {('<dt>Filed by helper</dt><dd>' + E(hp.get('name')) + ' ' + E(hp.get('phone')) + ' ' + E(hp.get('org')) + '</dd>') if hp else ''}
@@ -116,10 +171,7 @@ def app_card_body(a, con):
 {('<dt>Notes</dt><dd>' + E(p.get('notes')) + '</dd>') if p.get('notes') else ''}
 <dt>Family</dt><dd>{('<a href="/families/' + E(fam['id']) + '">' + E(fam['display_name']) + '</a> · seasons served: ' + E(fam['seasons_served']) + ' · trust ' + E(fam['trust'])) if fam else '<span class="muted">not linked</span>'}</dd>
 </dl>
-<form method="post" action="/apps/{E(a['id'])}/decide" class="inline">
-{''.join(f'<button class="btn btn-ghost small" name="status" value="{s}">{s}</button> ' for s in ['accepted', 'hold', 'needs_info', 'declined', 'duplicate', 'out_of_area'])}
-<div style="margin-top:6px"><input name="note" value="{E(a.get('note') or '')}" maxlength="200" placeholder="note the family sees on the status page, in their language ({E((p.get('applicant') or {}).get('contact_lang') or a.get('lang') or 'es')}); no personal details" style="width:100%;min-height:36px;font:inherit;padding:4px 8px"></div>
-</form></div>"""
+{actions}</div>"""
 
 
 def dashboard(con, q=None):
@@ -132,13 +184,34 @@ def dashboard(con, q=None):
     trow = "".join(f"<li><a href='/tasks?kind={E(urllib.parse.quote(t['kind']))}'>{E(t['kind'])}</a>: {E(t['n'])}</li>" for t in tasks) or "<li class='muted'>none</li>"
     events = con.execute("SELECT * FROM events ORDER BY id DESC LIMIT 12").fetchall()
     erow = "".join(f"<li><span class='muted'>{E(str(e['at'] or '')[:16])}</span> {E(e['kind'])} {E(e['ref'])} <span class='muted'>{E(str(e['detail'] or '')[:120])}</span></li>" for e in events)
-    return page("Dashboard", f"""<h1>Dashboard</h1>{ecard}
+    return page("Dashboard", f"""<h1>Dashboard</h1>{ecard}{server_card()}
 <div class="pair"><div class="card"><h2>Applications</h2><table><tr><th>Season</th><th>Status</th><th>Count</th></tr>{rows}</table></div>
 <div class="card"><h2>Open tasks</h2><ul>{trow}</ul>
 <form method="post" action="/actions/pull" class="inline"><button class="btn btn-primary small">Pull new applications</button></form>
 <form method="post" action="/actions/match" class="inline"><button class="btn btn-secondary small">Run matching</button></form>
 <form method="post" action="/actions/push" class="inline"><button class="btn btn-ghost small">Push statuses</button></form></div></div>
 <h2>Recent activity</h2><ul>{erow}</ul>""", con)
+
+
+def server_card():
+    """What the Worker says the season is, and a loud line when this Mac's config differs."""
+    try:
+        from .sync import load_config
+        cfg = load_config()
+    except Exception as e:
+        cfg = {}; cfg_err = f"{type(e).__name__}: {e}"
+    else:
+        cfg_err = ""
+    info = SERVER.get("info")
+    if isinstance(info, dict):
+        gate = "open" if info.get("open") else f"closed ({E(info.get('reason') or '?')})"
+        line = f"Server: season <b>{E(info.get('season'))}</b> · mode <b>{E(info.get('mode'))}</b> · {gate} · {E(info.get('opens'))} to {E(info.get('closes'))}"
+        drift = config_drift(cfg, info)
+        warn = f"<p><b>config on this Mac differs from the server; run git pull</b> (differs: {E(', '.join(drift))}; the console and the cards follow the server).</p>" if drift else ""
+    else:
+        line = f"Server: not reached ({E(SERVER.get('error') or 'not checked yet')}). This Mac's config/season.json is used: mode <b>{E(cfg.get('mode'))}</b>, season <b>{E(cfg.get('season'))}</b>."
+        warn = f"<p><b>{E(cfg_err)}</b></p>" if cfg_err else ""
+    return f"<div class='card{' warn' if warn else ''}'><p>{line} <span class='muted'>checked {E(str(SERVER.get('at') or '')[:16])}</span></p>{warn}</div>"
 
 
 def close_form(t):
@@ -154,9 +227,15 @@ def task_card(t, con):
         B = load_apps(con, "id=?", (c["app_b"],)) if c else []
         if c and A and B:
             body += f"<div class='pair'>{app_card(A[0], con)}{app_card(B[0], con)}</div>"
-            body += f"""<p>Score {float(c['score'] or 0):.2f} · {E(c['verdict'] or '?')} by {E(c['decided_by'] or '?')}</p>
-<form method="post" action="/candidates/{E(c['id'])}/resolve" class="inline"><input type="hidden" name="task" value="{E(t['id'])}">
+            body += f"<p>Score {float(c['score'] or 0):.2f} · {E(c['verdict'] or '?')} by {E(c['decided_by'] or '?')}</p>"
+            if c["verdict"] == "void" or A[0].get("status") == "superseded" or B[0].get("status") == "superseded":
+                body += "<p class='muted'>One side was replaced by the applicant's edit; the pair is void. Matching raises a fresh pair for the new application.</p>"
+            else:
+                same_season = A[0].get("season") == B[0].get("season")
+                body += f"""<form method="post" action="/candidates/{E(c['id'])}/resolve" class="inline"><input type="hidden" name="task" value="{E(t['id'])}">
 <button class="btn btn-primary small" name="verdict" value="same">Same family</button> <button class="btn btn-ghost small" name="verdict" value="different">Different families</button></form>"""
+                if same_season:
+                    body += "<p class='hint'>Same family this season: the two are linked and the later one (or the one not accepted) is marked duplicate, so only one can be accepted.</p>"
         else:
             body += "<p class='muted'>pair no longer available</p>"
     elif t["app_id"]:
@@ -164,8 +243,9 @@ def task_card(t, con):
         body += app_card(A[0], con) if A else "<p class='muted'>application no longer available</p>"
     if t["kind"] == "decrypt_error":
         sid = error_task_id(t["title"])
-        if sid:  # junk or spam: remove the row from the server. The hidden input echoes the id; the handler checks it.
-            body += f"""<form method="post" action="/tasks/{E(t['id'])}/delete-server" class="inline"><input type="hidden" name="confirm" value="{E(sid)}">
+        if sid:  # junk or spam: remove the row from the server. The id must be typed back; the handler compares it exactly.
+            body += f"""<p class='muted'>Two causes. <b>Key mismatch</b> (sent before this Mac's key was in the live site, or this Mac has the wrong key file): nothing to delete; another board Mac can read it, and <code>bin/review retry-failed</code> stores it here once the right key is on this Mac. <b>Junk or spam</b>: only if another board Mac with the season key cannot read it either. Deleting is permanent.</p>
+<form method="post" action="/tasks/{E(t['id'])}/delete-server" class="inline"><input name="confirm" placeholder="type {E(sid)} to delete" autocomplete="off" style="min-height:36px;font:inherit;padding:4px 8px">
 <button class="btn btn-ghost small">Delete from server</button></form> """
     return body + close_form(t)
 
@@ -211,7 +291,7 @@ def apps_page(con, q):
             rows.append("<tr><td colspan='7'>" + error_card(f"Application {a.get('id', '?')}", e) + "</td></tr>")
     return page("Applications", f"""<h1>Applications <span class="muted">{len(apps)}</span></h1>
 <form method="get" class="toolbar"><input name="q" value="{E(search)}" placeholder="search" style="min-height:40px;font:inherit;padding:4px 8px"> <input name="season" value="{E(season)}" placeholder="season" size="6" style="min-height:40px;font:inherit;padding:4px 8px">
-<select name="status" style="min-height:40px;font:inherit"><option value="">any status</option>{''.join(f'<option {"selected" if s == status else ""}>{s}</option>' for s in STATUSES)}</select> <button class="btn btn-ghost small">Filter</button></form>
+<select name="status" style="min-height:40px;font:inherit"><option value="">any status</option>{''.join(f'<option {"selected" if s == status else ""}>{s}</option>' for s in FILTER_STATUSES)}</select> <button class="btn btn-ghost small">Filter</button></form>
 <table><tr><th>ID</th><th>Season</th><th>Head of household</th><th>Address</th><th>Kids</th><th>Status</th><th>Family</th></tr>{''.join(rows)}</table>""", con)
 
 
@@ -260,8 +340,10 @@ def export_csv(con, season, kind):
         for a in apps:
             try:
                 p = d(a.get("payload")); ap = d(p.get("applicant")); ml = d(p.get("mailing")); ad = d(p.get("address"))
-                if ml:  # an explicit mailing address is one line (a PO box or a full street line); no unit field
-                    w.writerow([a["id"], f"{ap.get('first_name', '') or ''} {ap.get('last_name', '') or ''}".strip(), ml.get("street", "") or "", "", ml.get("city", "") or "", ml.get("zip", "") or "", contact_lang(a)])
+                if ml:  # an explicit mailing address is one line (a PO box or a full street line); no unit field.
+                    # The form makes the mailing city and ZIP optional: a bare PO box line takes the home city and ZIP.
+                    w.writerow([a["id"], f"{ap.get('first_name', '') or ''} {ap.get('last_name', '') or ''}".strip(), ml.get("street", "") or "", "",
+                                str(ml.get("city") or "").strip() or ad.get("city", "") or "", str(ml.get("zip") or "").strip() or ad.get("zip", "") or "", contact_lang(a)])
                 else:
                     w.writerow([a["id"], f"{ap.get('first_name', '') or ''} {ap.get('last_name', '') or ''}".strip(), ad.get("street", "") or "", ad.get("unit", "") or "", ad.get("city", "") or "", ad.get("zip", "") or "", contact_lang(a)])
             except Exception as e:
@@ -290,7 +372,10 @@ def exports_page(con):
 
 def cards_page(con, season, mode=None):
     """One printable card per accepted application. The message follows the season mode
-    (pickup, mail, deliver) in the applicant's contact language."""
+    (pickup, mail, deliver) in the applicant's contact language. The mode is the deployed
+    Worker's when the console reached it, else this Mac's config."""
+    if mode is None:
+        mode = server_mode()
     if mode is None:
         from .sync import load_config
         mode = load_config().get("mode", "pickup")
@@ -397,7 +482,7 @@ def make_handler(con, port):
             p = self.path.split("?")[0]
             if p in ("/actions/pull", "/actions/match", "/actions/push"):
                 if p == "/actions/pull":
-                    from .sync import pull; pull(con)
+                    from .sync import pull; pull(con); refresh_server_info()
                 elif p == "/actions/match":
                     from .sync import load_config; run_matching(con, load_config()["season"])
                 else:
@@ -410,16 +495,25 @@ def make_handler(con, port):
                     from .sync import delete_server; delete_server(con, sid)
                 return self.redirect("/tasks")
             if p.startswith("/apps/") and p.endswith("/decide"):
-                status = g("status")
-                if status in STATUSES:
-                    set_decision(con, p.split("/")[2], status, g("note"))
+                status = g("status"); app_id = p.split("/")[2]; note = g("note")
+                if status == NOTE_SAVE:
+                    set_note(con, app_id, note)  # Enter in the note field: the note, and only the note
+                elif status in STATUSES:
+                    if status != "needs_info":
+                        # The note belongs to needs_info. Under any other status it is kept only
+                        # when the person typed something new; the prefilled old note is dropped.
+                        old = con.execute("SELECT note FROM applications WHERE id=?", (app_id,)).fetchone()
+                        if old is not None and note.strip() == (old["note"] or "").strip():
+                            note = ""
+                    set_decision(con, app_id, status, note)
                 ref = self.headers.get("referer") or ""
                 return self.redirect(ref if any(ref.startswith(o + "/") for o in origins) else "/apps")
             if p.startswith("/candidates/") and p.endswith("/resolve"):
                 verdict = g("verdict")
-                if verdict in ("same", "different"):
-                    resolve_candidate(con, p.split("/")[2], verdict)
-                    if g("task"): con.execute("UPDATE tasks SET status='done', resolved_at=?, resolution=? WHERE id=?", (now(), f"human: {verdict}", g("task"))); con.commit()
+                t = con.execute("SELECT status FROM tasks WHERE id=?", (g("task"),)).fetchone() if g("task") else None
+                if verdict in ("same", "different") and not (t and t["status"] != "open"):  # a task already closed is not resolved twice
+                    outcome = resolve_candidate(con, p.split("/")[2], verdict)
+                    if g("task"): con.execute("UPDATE tasks SET status='done', resolved_at=?, resolution=? WHERE id=?", (now(), f"human: {outcome}", g("task"))); con.commit()
                 return self.redirect("/tasks")
             if p.startswith("/tasks/") and p.endswith("/close"):
                 status = g("status")
@@ -432,6 +526,7 @@ def make_handler(con, port):
 
 
 def serve(con, port=8789):
+    refresh_server_info()  # the dashboard shows the Worker's season and mode next to this Mac's config
     srv = HTTPServer(("127.0.0.1", port), make_handler(con, port))
     print(f"console at http://127.0.0.1:{port}/  (Ctrl-C to stop)")
     try:

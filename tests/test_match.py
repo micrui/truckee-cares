@@ -218,3 +218,77 @@ def test_import_without_submission_id_is_stable(tmp_path):
     con2 = connect(tmp_path / "t2.sqlite")
     import_xlsx(path, "2025", "accepted", con2)
     assert sorted(r[0] for r in con2.execute("SELECT id FROM applications")) == ids  # same ids in a fresh database
+
+
+def test_same_family_this_season_marks_one_duplicate_and_links_both(tmp_path):
+    from review.match import resolve_candidate
+    con = connect(tmp_path / "t.sqlite")
+    a = payload("Maria", "Garcia", "5305550100", "10000 Donner Pass Rd", "96161", [("Sofia", 7, "girl"), ("Mateo", 4, "boy")])
+    b = payload("Jose", "Garcia", "5305550199", "10000 Donner Pass Road", "96161", [("Sofía", 7, "girl"), ("Mateo", 4, "boy")], other_adult="Maria Garcia")
+    insert(con, "A1", a); insert(con, "B1", b)
+    run_matching(con, "2026", use_judge=False)
+    cid = con.execute("SELECT id FROM candidates").fetchone()[0]
+    out = resolve_candidate(con, cid, "same")
+    assert out == "same family; B1 marked duplicate, A1 kept"  # same time, so the later id is the duplicate
+    st = {r["id"]: (r["status"], r["family_id"]) for r in con.execute("SELECT id, status, family_id FROM applications")}
+    assert st["A1"][0] == "matched" and st["B1"][0] == "duplicate"
+    assert st["A1"][1] is not None and st["A1"][1] == st["B1"][1] and con.execute("SELECT COUNT(*) FROM families").fetchone()[0] == 1
+    assert con.execute("SELECT detail FROM events WHERE kind='duplicate' AND ref='B1'").fetchone()[0] == "same family as A1 (human)"
+    assert con.execute("SELECT verdict, decided_by FROM candidates").fetchone()[:] == ("same", "human")
+    # The one already accepted is kept, even when it is the later one.
+    con2 = connect(tmp_path / "t2.sqlite")
+    insert(con2, "A2", a); insert(con2, "B2", b, status="accepted")
+    run_matching(con2, "2026", use_judge=False, include_all=True)
+    cid = con2.execute("SELECT id FROM candidates").fetchone()[0]
+    assert resolve_candidate(con2, cid, "same") == "same family; A2 marked duplicate, B2 kept"
+    assert con2.execute("SELECT status FROM applications WHERE id='B2'").fetchone()[0] == "accepted"
+    assert resolve_candidate(con2, cid, "different") == "different"
+
+
+def test_linking_follows_an_edit_to_the_newest_row(tmp_path):
+    from review.match import latest, link_family, resolve_candidate
+    con = connect(tmp_path / "t.sqlite")
+    prior = payload("Lupe", "Hernandez", "5305550123", "12345 Pine St", "96161", [("Ana", 5, "girl"), ("Luis", 9, "boy")], season="2025")
+    cur = payload("Guadalupe", "Hernández", "5305550123", "12345 Pine Street #2", "96161", [("Ana", 6, "girl"), ("Luis", 10, "boy")], season="2026")
+    insert(con, "P1", prior, status="accepted"); insert(con, "C1", cur, status="superseded"); insert(con, "C2", cur); insert(con, "C3", cur)
+    con.execute("UPDATE applications SET supersedes='C1', status='superseded', submitted_at='2026-10-21T00:00:00Z' WHERE id='C2'")
+    con.execute("UPDATE applications SET supersedes='C2', submitted_at='2026-10-22T00:00:00Z' WHERE id='C3'")
+    con.execute("INSERT INTO candidates(id,app_a,app_b,score,reasons,verdict,decided_by) VALUES('c1','C1','P1',0.7,'[]','unsure','rule')")
+    con.commit()
+    a = lambda i: load_apps(con, "id=?", (i,))[0]  # noqa: E731
+    assert latest(con, a("C1"))["id"] == "C3" and latest(con, a("P1"))["id"] == "P1"
+    assert resolve_candidate(con, "c1", "same") == "same"
+    fam = {r["id"]: r["family_id"] for r in con.execute("SELECT id, family_id FROM applications")}
+    assert fam["P1"] is not None and fam["C3"] == fam["P1"] and fam["C1"] is None and fam["C2"] is None
+    assert link_family(con, a("C1"), a("C3")) is None  # one row and its own edit are not two families
+    con.execute("DELETE FROM candidates"); con.execute("UPDATE applications SET family_id=NULL"); con.execute("DELETE FROM families"); con.commit()
+    assert link_family(con, a("C2"), a("P1")) is not None and a("C3")["family_id"] == a("P1")["family_id"]
+
+
+def test_final_decisions_close_own_tasks_and_a_superseded_row_refuses(tmp_path):
+    import pytest
+    from review.db import add_task
+    from review.match import set_decision, set_note
+    con = connect(tmp_path / "t.sqlite")
+    insert(con, "B", payload("Elena", "Ruiz", "5305550998", "2 Oak St", "89451", [("Sara", 12, "girl")]))
+    run_matching(con, "2026", use_judge=False)
+    add_task(con, "review_notes", "n", app_id="B"); add_task(con, "review_edit", "e", app_id="B"); add_task(con, "resolve_duplicate", "d", app_id="B"); con.commit()
+    kinds = lambda: {r["kind"] for r in con.execute("SELECT kind FROM tasks WHERE status='open'")}  # noqa: E731
+    set_decision(con, "B", "hold")
+    assert kinds() == {"verify_address", "review_notes", "review_edit", "resolve_duplicate"}
+    set_decision(con, "B", "needs_info", "traiga comprobante")
+    assert kinds() == {"verify_address", "review_notes", "review_edit", "resolve_duplicate"}
+    set_decision(con, "B", "declined", "fuera del area")
+    assert kinds() == {"resolve_duplicate"}
+    assert {r[0] for r in con.execute("SELECT resolution FROM tasks WHERE status='done'")} == {"decided: declined"}
+    set_note(con, "B", "  nueva nota  ")
+    assert con.execute("SELECT status, note FROM applications WHERE id='B'").fetchone()[:] == ("declined", "nueva nota")
+    with pytest.raises(ValueError, match="server"):
+        set_decision(con, "B", "superseded")
+    con.execute("UPDATE applications SET status='superseded' WHERE id='B'"); con.commit()
+    with pytest.raises(ValueError, match="replaced"):
+        set_decision(con, "B", "accepted")
+    with pytest.raises(ValueError, match="replaced"):
+        set_note(con, "B", "x")
+    assert con.execute("SELECT status, note FROM applications WHERE id='B'").fetchone()[:] == ("superseded", "nueva nota")
+    set_decision(con, "nope", "accepted")  # a missing id is a no-op, not a crash
