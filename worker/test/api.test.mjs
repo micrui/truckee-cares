@@ -15,7 +15,7 @@ function fakeDB() {
         async run() {
           if (sql.startsWith("INSERT")) {
             if (rows.has(args[0])) throw new Error("UNIQUE constraint failed");
-            rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null });
+            rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null, supersedes: args[5] ?? null });
             return { meta: { changes: 1 } };
           }
           if (sql.startsWith("UPDATE")) { const r = rows.get(args[2]); if (r) { r.status = args[0]; r.updated_at = args[1]; } return { meta: { changes: r ? 1 : 0 } }; }
@@ -398,4 +398,20 @@ test("while the real season is open, preview needs the preview token", async () 
   assert.equal((await handle(req("POST", "/api/apply", { body, headers: { "x-preview": "" } }), unset, OPEN)).status, 400);
   // Before opening, plain preview works without the header.
   assert.equal((await handle(req("POST", "/api/apply", { body }), e, PRESEASON)).status, 201);
+});
+
+test("an edit supersedes the earlier submission from the same season", async () => {
+  const e = env();
+  const inSeason = Date.parse("2026-10-20T12:00:00-07:00");
+  const first = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT } }), e, inSeason)).json();
+  const edit = await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: first.id } }), e, inSeason);
+  assert.equal(edit.status, 201);
+  const { id, supersedes } = await edit.json();
+  assert.equal(supersedes, first.id);
+  assert.equal(e.DB.rows.get(first.id).status, "superseded");
+  assert.equal(e.DB.rows.get(id).supersedes, first.id);
+  // a second edit of the already-superseded row, a bad id, or a wrong-season id are refused
+  assert.equal((await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: first.id } }), e, inSeason)).status, 400);
+  assert.equal((await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: "TCC-26-NOPE1" } }), e, inSeason)).status, 400);
+  assert.equal((await handle(req("POST", "/api/apply", { body: { season: "preview", lang: "es", ciphertext: CT, supersedes: id } }), e, Date.parse("2026-09-25T12:00:00-07:00"))).status, 400);
 });

@@ -21,10 +21,23 @@ function screens() {
 }
 let cur = "welcome";
 let editReturn = null;   // set when Edit is tapped on the review screen
+let supersedes = "";     // code of the application this send replaces (an edit)
+let lastSupersedes = ""; // shown on the done screen after an edit
+function loadSent() {
+  try {
+    const d = JSON.parse(sessionStorage.getItem(SENT_KEY));
+    if (d && d.id && d.state && Date.now() - Date.parse(d.sent_at || 0) < SENT_TTL_MS) return d;
+    sessionStorage.removeItem(SENT_KEY);
+  } catch (e) {}
+  return null;
+}
+function clearSent() { try { sessionStorage.removeItem(SENT_KEY); sessionStorage.removeItem(DRAFT_KEY); } catch (e) {} }
 const stepIndex = () => Math.max(0, screens().indexOf(cur));
 let demoMode = false;   // ?voice: shows the voice-first and free-form demos on the welcome screen
 const DRAFT_KEY = "tcc-draft";
 const REMEMBER_KEY = "tcc-remembered";
+const SENT_KEY = "tcc-sent";          // this session's sent application, so it can be edited
+const SENT_TTL_MS = 2 * 3600 * 1000;
 const LANG_KEY = "tcc-lang";
 
 const root = document.getElementById("app");
@@ -178,11 +191,11 @@ function renderStep() {
   const q = (text, hint) => `<h1 class="q-title">${esc(text)}</h1>${hint ? `<p class="why">${esc(hint)}</p>` : ""}`;
 
   if (id === "welcome") {
-    const rem = loadRemembered();
+    const sent = loadSent();
     return `<div class="step welcome"><h1>${t("welcome_title")}</h1><p class="lead-short">${t("welcome_short")}</p>
-      ${rem && !prefilled ? `<div class="card"><h2>${t("welcome_back_neutral")}</h2><p>${t("welcome_back_text")}</p>
-        <button class="btn btn-primary btn-big" data-action="prefill">${t("start")}</button>
-        <p style="text-align:center;margin-top:8px"><button class="btn btn-ghost" data-action="fresh">${t("welcome_back_fresh")}</button></p></div>`
+      ${sent ? `<div class="card"><p><strong>${esc(t("sent_note", sent.id))}</strong></p>
+        <button class="btn btn-primary btn-big" data-action="edit-sent">✏️ ${t("sent_edit")}</button>
+        <button class="btn btn-ghost btn-big" data-action="new-family" style="margin-top:10px">👨‍👩‍👧 ${t("sent_new")}</button></div>`
       : `<button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>`}
       <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
       ${demoMode && voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
@@ -277,7 +290,8 @@ function render() {
   if (view === "voice") {
     body = renderVoice();
   } else if (view === "done") {
-    body = `<div class="done"><h1>✅ ${previewMode ? t("preview_done_title") : t("done_title")}</h1><p>${t("done_code")}</p><div class="code">${previewMode ? "TEST · " : ""}${esc(doneId)}</div>
+    body = `<div class="done"><h1>✅ ${lastSupersedes ? t("done_updated_title") : previewMode ? t("preview_done_title") : t("done_title")}</h1>
+      ${lastSupersedes ? `<p>${esc(t("done_updated_text", lastSupersedes))}</p>` : ""}<p>${t("done_code")}</p><div class="code">${previewMode ? "TEST · " : ""}${esc(doneId)}</div>
       <p>${t("done_text")}</p><p class="muted">${t("done_limited")}</p>
       <p><button class="btn btn-ghost" data-action="again">${t("done_again")}</button></p></div>`;
   } else if (!gate.open) {
@@ -508,7 +522,12 @@ root.addEventListener("click", async (ev) => {
     prefilled = true; cur = "helper";
   }
   if (a === "fresh") { try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} prefilled = true; cur = "helper"; }
-  if (a === "again") { state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; }
+  if (a === "edit-sent") {
+    const sent = loadSent();
+    if (sent) { state = { ...blankState(), ...sent.state, consent_all: false }; supersedes = sent.id; previewMode = !!sent.preview || previewMode; cur = "review"; }
+  }
+  if (a === "new-family") { clearSent(); state = blankState(); supersedes = ""; cur = "helper"; }
+  if (a === "again") { clearSent(); state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lastSupersedes = ""; }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
   errors = {}; saveDraft(); render();
 });
@@ -738,6 +757,7 @@ root.addEventListener("input", (ev) => {
   hint.hidden = !(z.length === 5 && !(config.service_area.zips.includes(z) || config.service_area.cities.map((c) => c.toLowerCase()).includes((state.city || "").toLowerCase())));
 });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && rec.state !== "idle") cancelRecording(); });
+window.addEventListener("pageshow", (ev) => { if (ev.persisted) location.reload(); });
 window.addEventListener("pagehide", () => { if (rec.state !== "idle") cancelRecording(); });
 
 function payload() {
@@ -783,11 +803,12 @@ async function submit() {
     for (const r of config.recipients) enc.addRecipient(r);
     const ciphertext = armor.encode(await enc.encrypt(JSON.stringify(payload())));
     const res = await fetch(`${config.api_base}/api/apply`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext }) });
+      body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext, supersedes: supersedes || undefined }) });
     if (!res.ok) {
       let err = ""; try { err = (await res.json()).error || ""; } catch (e) {}
       if (res.status === 403 && (err === "closed" || err === "not_open")) { gate = { open: false, reason: err }; view = "form"; voice = null; render(); return; }
       if (res.status === 400 && err === "wrong_season") { sendReason = "stale"; throw new Error(err); }
+      if (res.status === 400 && err === "bad_supersedes") { supersedes = ""; clearSent(); sending = false; return submit(); }
       if (res.status === 429) {
         sendReason = "busy";
         setTimeout(() => {
@@ -804,6 +825,8 @@ async function submit() {
     }
     const data = await res.json();
     doneId = data.id;
+    lastSupersedes = supersedes; supersedes = "";
+    try { const { consent_all, ...keep } = state; sessionStorage.setItem(SENT_KEY, JSON.stringify({ id: doneId, sent_at: new Date().toISOString(), preview: previewMode, state: keep })); } catch (e) {}
     try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
     const fromVoice = view === "voice";

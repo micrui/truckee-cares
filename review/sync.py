@@ -187,8 +187,19 @@ def store_item(con, item, season, identities, cfg, preview, failed):
             norm = normalize_payload(payload)
             lang = item.get("lang")
             lang = lang if lang in ("en", "es") else "en"
-            con.execute("INSERT INTO applications(id,season,source,submitted_at,lang,status,payload,norm,server_status,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                        (sid, season, "web", created, lang, "new", json.dumps(payload, ensure_ascii=False), json.dumps(norm), item.get("status"), now()))
+            supersedes = item.get("supersedes") or None
+            con.execute("INSERT INTO applications(id,season,source,submitted_at,lang,status,payload,norm,server_status,updated_at,supersedes) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (sid, season, "web", created, lang, "new", json.dumps(payload, ensure_ascii=False), json.dumps(norm), item.get("status"), now(), supersedes))
+            if supersedes:
+                # An edit replaces the earlier application: it leaves the queue, and the new
+                # one inherits its family and any decision already made.
+                old = con.execute("SELECT family_id, status FROM applications WHERE id=?", (supersedes,)).fetchone()
+                if old:
+                    inherit = old["status"] if old["status"] in ("accepted", "hold", "declined") else "new"
+                    con.execute("UPDATE applications SET family_id=?, status=? WHERE id=?", (old["family_id"], inherit, sid))
+                    con.execute("UPDATE applications SET status='superseded', updated_at=? WHERE id=?", (now(), supersedes))
+                    con.execute("UPDATE tasks SET status='dismissed', resolved_at=?, resolution='application was edited' WHERE app_id=? AND status='open'", (now(), supersedes))
+                    log(con, "superseded", supersedes, f"replaced by {sid}")
             result = "new"
         except Exception as e:  # keep going; a bad row becomes a task, not a wall
             result = "failed"
@@ -338,7 +349,7 @@ def delete_failed(con, season):
 
 # --- statuses back to the server ---------------------------------------------------------
 
-SERVER_STATUS = {"accepted": "accepted", "declined": "declined", "duplicate": "duplicate", "out_of_area": "out_of_area", "matched": "fetched", "new": "fetched", "hold": "fetched"}
+SERVER_STATUS = {"accepted": "accepted", "declined": "declined", "duplicate": "duplicate", "out_of_area": "out_of_area", "matched": "fetched", "new": "fetched", "hold": "fetched", "superseded": "superseded"}
 
 
 def push_statuses(db=None):

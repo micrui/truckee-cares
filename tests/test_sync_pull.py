@@ -342,3 +342,41 @@ def test_cli_turns_a_setup_error_into_an_exit_message(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as ex:
         cli.main(["pull"])
     assert "keygen" in str(ex.value)
+
+
+def test_edit_supersedes_earlier_application(tmp_path, monkeypatch):
+    """A row that supersedes another marks the old one superseded, inherits its family and
+    decision, dismisses its open tasks, and the matcher ignores the old one."""
+    import json
+    from review import sync
+    from review.db import connect, add_task
+    from review.match import run_matching, load_apps
+    con = connect(tmp_path / "t.sqlite")
+    ident = pyrage.x25519.Identity.generate()
+    recips = [ident.to_public()]
+    def enc(payload):
+        return armor(pyrage.encrypt(json.dumps(payload).encode(), recips))
+    p = {"version": 1, "applicant": {"first_name": "Rosa", "last_name": "Lopez", "phone": "5305550100"}, "address": {"street": "1 Elm", "city": "Truckee", "zip": "96161", "in_area": True}, "children": [], "household": {"adults": 2}}
+    rows = [
+        {"id": "TCC-26-AAAAA", "season": "2026", "lang": "es", "created_at": "2026-10-20T10:00:00Z", "ciphertext": enc(p), "status": "new"},
+        {"id": "TCC-26-BBBBB", "season": "2026", "lang": "es", "created_at": "2026-10-20T11:00:00Z", "ciphertext": enc({**p, "applicant": {**p["applicant"], "last_name": "Lopez Garcia"}}), "status": "new", "supersedes": "TCC-26-AAAAA"},
+    ]
+    server = Server({"2026": rows[:1], "preview": []})
+    monkeypatch.setattr(sync, "api", server.api)
+    monkeypatch.setattr(sync, "load_identities", lambda: [ident])
+    monkeypatch.setattr(sync, "load_config", lambda: {"season": "2026", "opens": "2026-10-15T00:00:00", "closes": "2026-11-15T23:59:59", "timezone": "America/Los_Angeles", "api_base": "x"})
+    # pull only the first row, decide on it, then pull the edit
+    sync.pull(con)
+    con.execute("INSERT INTO families(id,created_at,display_name) VALUES('fam-1','x','Lopez, Rosa')")
+    con.execute("UPDATE applications SET status='accepted', family_id='fam-1' WHERE id='TCC-26-AAAAA'")
+    add_task(con, "verify_address", "check", app_id="TCC-26-AAAAA")
+    con.commit()
+    server.rows = {"2026": rows, "preview": []}
+    sync.pull(con)
+    old = con.execute("SELECT status FROM applications WHERE id='TCC-26-AAAAA'").fetchone()[0]
+    new = con.execute("SELECT status, family_id, supersedes FROM applications WHERE id='TCC-26-BBBBB'").fetchone()
+    assert old == "superseded"
+    assert (new[0], new[1], new[2]) == ("accepted", "fam-1", "TCC-26-AAAAA")
+    assert con.execute("SELECT status FROM tasks WHERE app_id='TCC-26-AAAAA'").fetchone()[0] == "dismissed"
+    stats = run_matching(con, "2026", use_judge=False, include_all=True)
+    assert stats["pairs"] == 0  # the superseded row is not a candidate against its own edit

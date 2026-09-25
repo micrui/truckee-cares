@@ -24,7 +24,8 @@ const MAX_CIPHERTEXT = 16 * 1024;
 const PAGE = 500;
 const DAY = 24 * 60 * 60 * 1000;
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L
-const STATUSES = new Set(["new", "fetched", "accepted", "declined", "duplicate", "out_of_area"]);
+const STATUSES = new Set(["new", "fetched", "accepted", "declined", "duplicate", "out_of_area", "superseded"]);
+const ID_RE = /^TCC-[A-Z0-9]{2}-[A-Z0-9]{5}$/;
 const ARMOR_BEGIN = "-----BEGIN AGE ENCRYPTED FILE-----";
 const ARMOR_END = "-----END AGE ENCRYPTED FILE-----";
 const AGE_HEADER = "age-encryption.org/v1";
@@ -174,13 +175,23 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
     if (isPreview && g.open && !isPreviewer(req, env)) return json({ error: "wrong_season" }, 400, cors);
     if (!isPreview && !g.open) return json({ error: g.reason }, 403, cors);
     const target = isPreview ? PREVIEW_SEASON : season.season;
+    // An edit: the new row replaces an earlier one from the same season. Knowing the
+    // earlier code is the proof; it is shown only to the person who submitted it.
+    let supersedes = null;
+    if (body.supersedes !== undefined && body.supersedes !== null && body.supersedes !== "") {
+      if (typeof body.supersedes !== "string" || !ID_RE.test(body.supersedes)) return json({ error: "bad_supersedes" }, 400, cors);
+      const prior = await env.DB.prepare("SELECT id, season, status FROM submissions WHERE id = ?1").bind(body.supersedes).first();
+      if (!prior || prior.season !== target || prior.status === "superseded") return json({ error: "bad_supersedes" }, 400, cors);
+      supersedes = prior.id;
+    }
     const createdAt = new Date().toISOString();
     for (let attempt = 0; attempt < 5; attempt++) {
       const id = makeId(target);
       try {
-        await env.DB.prepare("INSERT INTO submissions (id, season, lang, created_at, ciphertext) VALUES (?1, ?2, ?3, ?4, ?5)")
-          .bind(id, target, lang === "es" ? "es" : "en", createdAt, ciphertext).run();
-        return json({ id }, 201, cors);
+        await env.DB.prepare("INSERT INTO submissions (id, season, lang, created_at, ciphertext, supersedes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
+          .bind(id, target, lang === "es" ? "es" : "en", createdAt, ciphertext, supersedes).run();
+        if (supersedes) await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2 WHERE id = ?3").bind("superseded", createdAt, supersedes).run();
+        return json({ id, supersedes }, 201, cors);
       } catch (e) {
         if (!/UNIQUE|constraint/i.test(String(e))) throw e;
       }
@@ -231,7 +242,7 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
       const since = url.searchParams.get("since") || "";
       const sinceId = url.searchParams.get("since_id") || "";
       const { results } = await env.DB.prepare(
-        "SELECT id, season, lang, created_at, ciphertext, status, updated_at FROM submissions WHERE season = ?1 AND (created_at > ?2 OR (created_at = ?2 AND id > ?3)) ORDER BY created_at, id LIMIT 500")
+        "SELECT id, season, lang, created_at, ciphertext, status, updated_at, supersedes FROM submissions WHERE season = ?1 AND (created_at > ?2 OR (created_at = ?2 AND id > ?3)) ORDER BY created_at, id LIMIT 500")
         .bind(s, since, sinceId).all();
       const last = results.length ? results[results.length - 1] : null;
       return json({ season: s, items: results, next_since: last ? last.created_at : since, next_id: last ? last.id : sinceId, has_more: results.length >= PAGE }, 200, cors);
@@ -240,7 +251,7 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
     let m = path.match(/^\/api\/admin\/submissions\/([A-Z0-9-]+)$/);
     if (req.method === "GET" && m) {
       // One row by id, for the review tool's retry of rows it could not read.
-      const row = await env.DB.prepare("SELECT id, season, lang, created_at, ciphertext, status, updated_at FROM submissions WHERE id = ?1").bind(m[1]).first();
+      const row = await env.DB.prepare("SELECT id, season, lang, created_at, ciphertext, status, updated_at, supersedes FROM submissions WHERE id = ?1").bind(m[1]).first();
       return row ? json({ item: row }, 200, cors) : json({ error: "not_found" }, 404, cors);
     }
     if (req.method === "PATCH" && m) {

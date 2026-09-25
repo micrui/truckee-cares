@@ -116,6 +116,12 @@ def run_matching(con, season, use_judge=True, include_all=False):
     for a in all_apps:
         for k in block_keys(a["norm"]):
             index.setdefault(k, set()).add(a["id"])
+    all_apps = [a for a in all_apps if a["status"] != "superseded"]   # edited-away applications never match
+    by_id = {a["id"]: a for a in all_apps}
+    index = {}
+    for a in all_apps:
+        for k in block_keys(a["norm"]):
+            index.setdefault(k, set()).add(a["id"])
     todo = [a for a in all_apps if a["season"] == season and (include_all or a["status"] == "new")]
     stats = {"apps": len(todo), "pairs": 0, "rule": 0, "llm": 0, "tasks": 0, "errors": 0}
     for A in todo:

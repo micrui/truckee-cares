@@ -103,6 +103,7 @@ def app_card_body(a, con):
     coats = sl(hh.get("adult_coat_sizes"))
     return f"""<div class="card"><h3><a href="/apps/{E(a['id'])}">{E(a['id'])}</a> {pill(a.get('status'))} <span class="muted">{E(a.get('season'))} · {E(a.get('source'))} · {E(str(a.get('submitted_at') or '')[:16])}</span></h3>
 <dl class="kv">
+{('<dt>Replaces</dt><dd><a href="/apps/' + E(a.get('supersedes')) + '">' + E(a.get('supersedes')) + '</a> (edited by the applicant)</dd>') if a.get('supersedes') else ''}
 <dt>Head of household</dt><dd><strong>{name_of(ap)}</strong>{(' · other adult: ' + E(ap.get('other_adult'))) if ap.get('other_adult') else ''}</dd>
 <dt>Phone</dt><dd>{E(ap.get('phone'))}{' (ok to text)' if ap.get('can_text') else ''}{(' · ' + E(ap.get('other_phone'))) if ap.get('other_phone') else ''}{(' · ' + E(ap.get('email'))) if ap.get('email') else ''}</dd>
 {('<dt>Filed by helper</dt><dd>' + E(hp.get('name')) + ' ' + E(hp.get('phone')) + ' ' + E(hp.get('org')) + '</dd>') if hp else ''}
