@@ -1,18 +1,42 @@
 // Run: npm run test:worker   (node --test, no network, fake D1 and fake ratelimit bindings)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import worker, { handle, gate, makeId, localToUtc, clientKey, ipv6Prefix, assistWindow, looksLikeAgeArmor } from "../src/index.js";
+import worker, { handle, gate, makeId, localToUtc, clientKey, ipv6Prefix, assistWindow, looksLikeAgeArmor, lateReplaceOk } from "../src/index.js";
 
+// Fake D1: rows in a Map, SELECTs project the named columns (so a test can see exactly
+// what a route returns), batch() runs statements in order as one transaction (every row
+// restored when any statement throws, like the real thing), and `failOn` makes a
+// statement whose SQL matches throw a non-constraint error.
 function fakeDB() {
   const rows = new Map();
+  const batches = [];
   const byTime = (a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  return {
+  const db = {
     rows,
+    batches,
+    failOn: null,
+    async batch(stmts) {
+      batches.push(stmts.map((st) => st.sql));
+      const snapshot = new Map([...rows].map(([k, v]) => [k, { ...v }]));
+      try {
+        const out = [];
+        for (const st of stmts) out.push(await st.run());
+        return out;
+      } catch (e) {
+        rows.clear();
+        for (const [k, v] of snapshot) rows.set(k, v);
+        throw e;
+      }
+    },
     prepare(sql) {
       let args = [];
+      const cols = sql.match(/^SELECT (.+?) FROM/)?.[1].split(",").map((c) => c.trim());
+      const pick = (r) => (r && cols ? Object.fromEntries(cols.map((c) => [c, r[c] ?? null])) : r);
       const stmt = {
+        sql,
         bind(...a) { args = a; return stmt; },
         async run() {
+          if (db.failOn && sql.startsWith(db.failOn)) throw new Error("D1_ERROR: storage caused object reset");
           if (sql.startsWith("INSERT")) {
             if (rows.has(args[0])) throw new Error("UNIQUE constraint failed");
             rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null, supersedes: args[5] ?? null, note: "", self_copy: args[6] ?? null });
@@ -28,18 +52,23 @@ function fakeDB() {
           const [season, since = "", sinceId = ""] = args;
           const results = [...rows.values()]
             .filter((r) => r.season === season && (r.created_at > since || (r.created_at === since && r.id > sinceId)))
-            .sort(byTime).slice(0, limit);
+            .sort(byTime).slice(0, limit).map(pick);
           return { results };
         },
         async first() {
-          if (/WHERE supersedes = \?1/.test(sql)) return [...rows.values()].find((r) => r.supersedes === args[0]) ?? null;
-          if (/WHERE id = \?1/.test(sql)) return rows.get(args[0]) ?? null;
+          if (/WHERE supersedes = \?1/.test(sql)) {
+            const hits = [...rows.values()].filter((r) => r.supersedes === args[0]).sort(byTime);
+            if (/ORDER BY created_at DESC/.test(sql)) hits.reverse();
+            return pick(hits[0] ?? null);
+          }
+          if (/WHERE id = \?1/.test(sql)) return pick(rows.get(args[0]) ?? null);
           throw new Error("fake D1: unexpected first() for " + sql);
         },
       };
       return stmt;
     },
   };
+  return db;
 }
 // success may be a boolean or a function of the key. Every key seen is recorded.
 function fakeRate(success = true) {
@@ -54,6 +83,7 @@ const req = (method, path, { body, headers = {}, raw } = {}) =>
 const armor = (plain) => `-----BEGIN AGE ENCRYPTED FILE-----\n${btoa(plain).match(/.{1,64}/g).join("\n")}\n-----END AGE ENCRYPTED FILE-----\n`;
 const CT = armor("age-encryption.org/v1\n-> X25519 bWFkZS11cC1lcGhlbWVyYWwtcHVibGljLWtleS1mb3ItdGVzdHM\nc2VhbGVkLWZpbGUta2V5LWZvci10ZXN0cw\n--- bWFj\n\u0000\u0001\u0002\u0003");
 
+const DAY = 24 * 60 * 60 * 1000;
 const BEFORE = Date.parse("2026-01-01T00:00:00Z");            // long before: gate closed, AI closed
 const PRESEASON = Date.parse("2026-09-15T12:00:00-07:00");   // gate not_open, AI window open
 const OPEN = Date.parse("2026-10-20T12:00:00-07:00");        // gate open, AI window open
@@ -449,4 +479,148 @@ test("the applicant's encrypted self copy is stored and returned only on request
   assert.equal(withCopy.self_copy, CT);
   const bad = await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, self_copy: "{\"plain\":true}" } }), e, inSeason);
   assert.equal(bad.status, 400);
+});
+
+test("admin list and one-row responses carry the board's note and never the self copy", async () => {
+  const e = env();
+  const auth = { authorization: "Bearer secret-token" };
+  const { id } = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, self_copy: CT } }), e, OPEN)).json();
+  await handle(req("PATCH", `/api/admin/submissions/${id}`, { headers: auth, body: { status: "needs_info", note: "Please text us your ZIP code." } }), e, AFTER);
+  const list = await (await handle(req("GET", "/api/admin/submissions?season=2026", { headers: auth }), e, AFTER)).json();
+  assert.equal(list.items.length, 1);
+  const item = list.items[0];
+  assert.equal(item.id, id);
+  assert.equal(item.note, "Please text us your ZIP code.");
+  assert.equal(item.status, "needs_info");
+  assert.ok("supersedes" in item);
+  assert.equal("self_copy" in item, false, "the review tool never receives the applicant's own copy");
+  assert.deepEqual(Object.keys(item).sort(), ["ciphertext", "created_at", "id", "lang", "note", "season", "status", "supersedes", "updated_at"]);
+  const one = (await (await handle(req("GET", `/api/admin/submissions/${id}`, { headers: auth }), e, AFTER)).json()).item;
+  assert.equal(one.note, "Please text us your ZIP code.");
+  assert.equal("self_copy" in one, false);
+  assert.deepEqual(Object.keys(one).sort(), Object.keys(item).sort());
+});
+
+test("PATCH keeps a superseded row superseded, still takes its note, and never forges superseded", async () => {
+  const e = env();
+  const auth = { authorization: "Bearer secret-token" };
+  const patch = (id, body) => handle(req("PATCH", `/api/admin/submissions/${id}`, { headers: auth, body }), e, AFTER);
+  const first = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT } }), e, OPEN)).json();
+  const edit = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: first.id } }), e, OPEN)).json();
+  assert.equal(e.DB.rows.get(first.id).status, "superseded");
+  // A stale push from a Mac that never saw the replacement cannot bring the old row back.
+  for (const status of ["fetched", "accepted", "needs_info", "declined"]) {
+    const r = await patch(first.id, { status, note: "stale" });
+    assert.equal(r.status, 409, status);
+    const j = await r.json();
+    assert.equal(j.error, "superseded");
+    assert.equal(j.superseded_by, edit.id);
+    assert.equal(e.DB.rows.get(first.id).status, "superseded");
+    assert.equal(e.DB.rows.get(first.id).note, "");
+  }
+  // The note may still change when the status stays superseded.
+  const noteOnly = await patch(first.id, { status: "superseded", note: "Replaced by the family on Nov 3." });
+  assert.equal(noteOnly.status, 200);
+  assert.equal((await noteOnly.json()).changed, 1);
+  assert.equal(e.DB.rows.get(first.id).status, "superseded");
+  assert.equal(e.DB.rows.get(first.id).note, "Replaced by the family on Nov 3.");
+  // Nothing supersedes the replacement, so it cannot be marked superseded by hand.
+  const forged = await patch(edit.id, { status: "superseded", note: "" });
+  assert.equal(forged.status, 400);
+  assert.equal((await forged.json()).error, "nothing_supersedes");
+  assert.equal(e.DB.rows.get(edit.id).status, "new");
+  // Ordinary decisions on the live row still work, and an unknown id is a no-op, not an error.
+  assert.equal((await patch(edit.id, { status: "accepted", note: "" })).status, 200);
+  assert.equal(e.DB.rows.get(edit.id).status, "accepted");
+  const missing = await patch("TCC-26-NOPE1", { status: "accepted" });
+  assert.equal(missing.status, 200);
+  assert.equal((await missing.json()).changed, 0);
+});
+
+test("an edit inserts the new row and supersedes the old one in one D1 batch, or does neither", async () => {
+  const e = env();
+  const first = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT } }), e, OPEN)).json();
+  assert.equal(e.DB.batches.length, 1);
+  assert.equal(e.DB.batches[0].length, 1, "a fresh application is a one-statement batch");
+  const edit = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: first.id } }), e, OPEN)).json();
+  assert.equal(e.DB.batches.length, 2);
+  assert.deepEqual(e.DB.batches[1].map((sql) => sql.split(" ")[0]), ["INSERT", "UPDATE"], "insert and supersede travel together");
+  assert.equal(e.DB.rows.get(first.id).status, "superseded");
+  assert.equal(e.DB.rows.get(edit.id).supersedes, first.id);
+  // When the supersede statement fails the whole batch rolls back: the old row stays
+  // live, no new row exists, and the family gets a 500 rather than two live applications.
+  e.DB.failOn = "UPDATE";
+  const before = e.DB.rows.size;
+  try {
+    // handle() throws; fetch() turns that into the 500 (covered by the CORS-on-500 test).
+    await assert.rejects(handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: edit.id } }), e, OPEN), /D1_ERROR/);
+  } finally {
+    e.DB.failOn = null;
+  }
+  assert.equal(e.DB.rows.size, before, "nothing inserted when the batch fails");
+  assert.equal(e.DB.rows.get(edit.id).status, "new", "the old row is still live");
+  assert.equal([...e.DB.rows.values()].filter((r) => r.supersedes === edit.id).length, 0);
+});
+
+test("a needs_info application can be replaced for 30 days after closing; nothing else can", async () => {
+  const closes = localToUtc("2026-11-15T23:59:59", "America/Los_Angeles");
+  const auth = { authorization: "Bearer secret-token" };
+  const e = env();
+  const post = (body, now) => handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, ...body } }), e, now);
+  const asked = await (await post({}, OPEN)).json();
+  const plain = await (await post({}, OPEN)).json();
+  await handle(req("PATCH", `/api/admin/submissions/${asked.id}`, { headers: auth, body: { status: "needs_info", note: "Which ZIP?" } }), e, AFTER);
+  // Within the ten-minute grace everything still goes through, as before.
+  assert.equal((await post({ supersedes: plain.id }, closes + 5 * 60 * 1000)).status, 201);
+  assert.equal((await post({}, closes + 5 * 60 * 1000)).status, 201);
+  // After the grace: a fresh application and a replacement of a plain row are closed.
+  const fresh = await post({}, closes + DAY);
+  assert.equal(fresh.status, 403);
+  assert.equal((await fresh.json()).error, "closed");
+  const live = [...e.DB.rows.values()].find((r) => r.status === "new" && r.supersedes === plain.id);
+  assert.equal((await post({ supersedes: live.id }, closes + DAY)).status, 403);
+  // A bad or unknown code after closing is closed too, not a hint about which codes exist.
+  assert.equal((await post({ supersedes: "TCC-26-NOPE1" }, closes + DAY)).status, 403);
+  // 29 days after closing, the family answers the board: allowed, and it supersedes.
+  const late = await post({ supersedes: asked.id }, closes + 29 * DAY);
+  assert.equal(late.status, 201);
+  const { id: answerId, supersedes } = await late.json();
+  assert.equal(supersedes, asked.id);
+  assert.equal(e.DB.rows.get(asked.id).status, "superseded");
+  assert.equal(e.DB.rows.get(answerId).status, "new");
+  // The answer itself is a plain row, so it cannot be replaced again after closing.
+  assert.equal((await post({ supersedes: answerId }, closes + 29 * DAY)).status, 403);
+  // 31 days after closing, a second needs_info row is out of time.
+  const asked2 = await (await post({}, OPEN)).json();
+  await handle(req("PATCH", `/api/admin/submissions/${asked2.id}`, { headers: auth, body: { status: "needs_info", note: "Which ZIP?" } }), e, AFTER);
+  assert.equal((await post({ supersedes: asked2.id }, closes + 30 * DAY)).status, 201);
+  const asked3 = await (await post({}, OPEN)).json();
+  await handle(req("PATCH", `/api/admin/submissions/${asked3.id}`, { headers: auth, body: { status: "needs_info", note: "Which ZIP?" } }), e, AFTER);
+  const tooLate = await post({ supersedes: asked3.id }, closes + 31 * DAY);
+  assert.equal(tooLate.status, 403);
+  assert.equal((await tooLate.json()).error, "closed");
+  assert.equal(e.DB.rows.get(asked3.id).status, "needs_info");
+  // The helper on its own: only a needs_info row of the target season, only after closes.
+  const cfg = { closes: "2026-11-15T23:59:59", timezone: "America/Los_Angeles" };
+  assert.equal(lateReplaceOk({ status: "needs_info", season: "2026" }, "2026", closes + DAY, cfg), true);
+  assert.equal(lateReplaceOk({ status: "needs_info", season: "preview" }, "2026", closes + DAY, cfg), false);
+  assert.equal(lateReplaceOk({ status: "accepted", season: "2026" }, "2026", closes + DAY, cfg), false);
+  assert.equal(lateReplaceOk({ status: "needs_info", season: "2026" }, "2026", closes - DAY, cfg), false);
+  assert.equal(lateReplaceOk(null, "2026", closes + DAY, cfg), false);
+});
+
+test("public status checks use the RATE tier under their own key, never the AI tier", async () => {
+  const e = env({ RATE_AI: fakeRate(false) });
+  const { id } = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT } }), e, OPEN)).json();
+  // A family refreshing its card ten times in a minute is fine: the AI limiter is tripped
+  // and irrelevant, and the checks count under "status:" rather than the apply key.
+  for (let i = 0; i < 10; i++) assert.equal((await handle(req("GET", `/api/status/${id}`), e, AFTER)).status, 200);
+  assert.deepEqual(e.RATE.calls, ["203.0.113.7", ...Array(10).fill("status:203.0.113.7")]);
+  assert.deepEqual(e.RATE_AI.calls, []);
+  // The RATE tier does apply, and it fails closed without the binding.
+  const tripped = env({ RATE: fakeRate((key) => !key.startsWith("status:")) });
+  const r = await handle(req("GET", `/api/status/${id}`), tripped, AFTER);
+  assert.equal(r.status, 429);
+  const none = env({ RATE: undefined });
+  assert.equal((await handle(req("GET", `/api/status/${id}`), none, AFTER)).status, 503);
 });

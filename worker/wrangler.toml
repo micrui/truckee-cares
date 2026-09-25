@@ -17,7 +17,9 @@ database_id = "c1f6b331-5db4-4917-a50b-4ba1b130e289"
 
 # Per-address rate limits (IPv4 address or IPv6 /64). Nothing is stored by us;
 # Cloudflare counts in memory. Applications: 30 a minute, because a school or
-# shelter sends many families through one NAT address in one evening.
+# shelter sends many families through one NAT address in one evening. Public
+# status checks share this tier under their own key ("status:" + address), so a
+# family refreshing its card does not spend the apply bucket or the AI one.
 [[unsafe.bindings]]
 name = "RATE"
 type = "ratelimit"

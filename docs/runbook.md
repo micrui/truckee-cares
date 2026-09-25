@@ -75,6 +75,23 @@ and matched in the review tool (`bin/review pull --season preview`, then match a
 console). Clear them any time with `bin/review purge-server preview` and
 `bin/review purge-local preview`.
 
+## Before opening day (checklist)
+
+- [ ] Two or more recipients in `config/season.json`; `bin/build` warns when there is one.
+- [ ] Restore rehearsal done and dated below (backup key on a Mac without the season key
+      decrypts a preview submission).
+- [ ] Custom domain on GitHub Pages. On `micrui.github.io` every project site shares one
+      browser origin, so any page under that account could read the codes and copy keys
+      the form keeps in local storage. A domain of its own (`apply.truckeecommunitycares.org`
+      or similar) is its own origin. Set it in the repo's Pages settings and put the same
+      value in `site/build.py --base ""` and the workflow.
+- [ ] Preview rows purged on both sides (`purge-server preview`, `purge-local preview`).
+- [ ] Help phone answers texts; the number in `config/season.json` is the one on the cards.
+- [ ] Applications open on the date in `config/season.json` (the form and the Worker read
+      the same file at deploy time; redeploy both after changing it).
+
+Restore rehearsals: (none yet)
+
 ## A second board member's Mac (Lynette)
 
 The console stays local on purpose: plaintext applications exist only on a board
@@ -98,8 +115,19 @@ member's Mac, never on a server or in a web page. To give a second person the co
 4. Verify: send a test application with `?preview` (or `?preview=<token>` during the
    season), then on her Mac `bin/review pull --season preview`. If it decrypts, she is set.
 5. `bin/review pull && bin/review match && bin/review console`. Her local database is
-   separate; decisions are shared through the Worker's status field, so agree on who
+   separate; decisions are shared through the Worker's status and note, so agree on who
    decides what.
+
+   **Second Mac.** `pull` reads the status and note the Worker already holds for every
+   application and starts the local row from them, so a decision made on the first Mac
+   (accepted, declined, duplicate, out of area, needs_info with its note) shows up here
+   as that decision, not as a new application. `push` sends only rows whose status or
+   note changed on this Mac; a row nobody decided here never overwrites the other Mac's
+   decision, and `superseded` is never sent (the server sets it). To catch up on
+   decisions the other Mac pushed after your last pull, `bin/review resync`: undecided
+   rows here take the server's decision; add `--overwrite` to also replace decisions made
+   here with the server's. `hold` exists only on the Mac that set it; the server shows it
+   as received.
 
 ## Application status for families
 
@@ -111,8 +139,30 @@ page after `bin/review push`. To ask a family for something, choose `needs_info`
 a one-line note in their language with no personal details; the status page shows it with
 Text and Call buttons. A family who wants to change something taps "Edit and resend" on the same phone (the
 answers come back from an encrypted copy only that phone can open) or fills the form out
-again from another phone; either way the new application replaces the old one and
-inherits its family and decision in the console.
+again from another phone; either way the new application replaces the old one. In the
+console the replacement keeps the family link but comes back as `new` with a
+`review_edit` task when the old one had already been decided, so nothing accepted slips
+through unread. The old code stays on the family's phone only until the replacement is
+sent; then the phone forgets it and shows the new one.
+
+What the phone keeps, and for how long: the confirmation code and the copy key live in
+the browser's local storage. Safari on iPhone deletes that storage after seven days
+without a visit to the site when the page was opened from a link in another app (Safari's
+tracking prevention), and always when the person clears website data. "Edit and resend"
+then turns into "fill it out again," which still replaces the old application by code.
+The confirmation screen tells families to screenshot the code for that reason.
+
+Helpers: a volunteer's phone keeps no code, no key and no copy. The confirmation screen
+says to hand the code to the family. The helper's own name and phone stay on that phone
+for the next family only until the tab is closed. Checking a code on the welcome screen
+remembers that code on the phone (never the answers), so a helper who looks up a
+family's status should tap "Forget this code on this phone" afterwards.
+
+After the season closes: the welcome screen still shows a family's status card and the
+code lookup, but "Edit and resend" only appears while sending is possible: during the
+season, or for thirty days after close when the board asked for more information
+(`needs_info`). A `needs_info` answer that arrives after close comes through `bin/review
+pull` like any other replacement.
 
 ## Each season
 

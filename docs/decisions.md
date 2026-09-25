@@ -194,3 +194,47 @@ the answers filled in, and "Replace and send" files a replacement that supersede
 code on the server and in the review tool. A different phone has no key and gets "fill it
 out again," which also replaces. The server still holds nothing it can read; the phone
 holds a key and a code, never the answers.
+
+## 2026-09-25 Second sweep: status after close, helpers forget, edits re-reviewed
+
+A second end-to-end sweep (55 agents, 58 findings, 2 refuted) after the edit-and-resend
+work. The fixes, and the calls behind them:
+
+- Status outlives the season. The closed screen replaced the whole form, so a family could
+  not check a decision made in December. Now the welcome shows the status card and the
+  lookup whenever a code is known or the season has closed; only the application path is
+  gated. Before opening day the lookup stays hidden, since there is nothing to find.
+- A `needs_info` answer may arrive for thirty days after close. The board asks for a
+  missing ZIP in December; the family must be able to send it. The Worker allows only a
+  `needs_info` prior of the current season through the closed gate, and only once.
+- Edits of decided applications come back as `new`. Inheriting an `accepted` decision
+  meant a family could change its address to another county after approval and nobody
+  would look. The replacement keeps the family link, resets the decision, and opens a
+  `review_edit` task that shows what changed.
+- The Worker refuses status changes on superseded rows (409) and the console marks them
+  superseded instead of pushing. `bin/review push` compares before writing, so a fresh Mac
+  with an empty database no longer overwrites the server's decisions.
+- Helpers' phones forget by default. A volunteer filling out ten applications should not
+  carry ten families' keys and answers. Helper sends store no code, no key and no copy;
+  the confirmation says to hand the code to the family. The volunteer's own name and phone
+  persist only for the tab session. Mike's call: "the helper case forgets the application
+  by default, unless we are sure about the crypto." The crypto is fine; the phone in a
+  jacket pocket is the risk.
+- The local encrypted copy stays. Random 16-byte key per send, scrypt work factor 12, the
+  key only in local storage next to the code. Accepted risks, written down in the runbook:
+  Safari's seven-day cap for storage (the family screenshots the code and can still
+  replace by code), and the shared `micrui.github.io` origin until the custom domain is
+  set (pre-open checklist).
+- A failed replace is never a silent duplicate. When the server rejects the old code the
+  form says so and offers "Send as a new application" and Text us, instead of retrying
+  without the link.
+- Drafts and done screens. Drafts expire after two hours and never write from the done
+  screen; "Start over" on every screen and "Cancel changes" on an edit clear the phone's
+  memory, so the next person on a shared phone does not inherit answers. The confirmation
+  screen survives a reload for two hours so a helper can still read the code.
+- Review screen edits every row (city, mailing, adult coats, referral, helper) and the
+  form reads the status card aloud. Phone numbers typed with a leading 1 are accepted.
+- Console: typed confirmation before delete, Enter in the note field no longer accepts,
+  the note is per decision, deciding closes the row's tasks, superseded rows are read-only,
+  and a banner says which mode (local or server) the console is in.
+

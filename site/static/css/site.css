@@ -199,3 +199,7 @@ body.rec-open { overflow: hidden; }
 
 .status-card { text-align: left; }
 .status-card .help-links { margin: 8px 0 0; }
+
+/* Quiet text actions under the nav row: start over, cancel. Never compete with Next. */
+.text-action { text-align: center; margin: 14px 0 0; }
+.text-action button { background: none; border: 0; padding: 8px 12px; color: var(--muted, #555); font: inherit; font-size: 0.95rem; text-decoration: underline; cursor: pointer; min-height: 44px; }

@@ -1,14 +1,19 @@
 // Truckee Community Cares API: an encrypted inbox on Cloudflare Workers + D1.
 //
 //   GET  /api/status                 -> { season, open, reason, opens, closes, mode, assist, tts, stt }
-//   POST /api/apply                  <- { season, lang, ciphertext }  -> { id }
+//   POST /api/apply                  <- { season, lang, ciphertext, supersedes?, self_copy? }  -> { id, supersedes }
+//                                    inside the season window; a replacement of a needs_info
+//                                    application is also taken for 30 days after closes
+//   GET  /api/status/:id             -> { status, note, superseded_by, ... }  never the application
 //   POST /api/help | /api/extract | /api/transcribe | /api/tts
 //                                    live help; only from 45 days before opens to a day after closes,
 //                                    or with header x-preview: <PREVIEW_TOKEN>
 //   GET  /api/admin/submissions      (Bearer ADMIN_TOKEN) [?season=&since=&since_id=]
 //                                    -> { items, next_since, next_id, has_more }   keyset pages of 500
 //   GET  /api/admin/submissions/:id  (Bearer) -> { item } | 404
-//   PATCH /api/admin/submissions/:id (Bearer) <- { status } -> { ok }
+//   PATCH /api/admin/submissions/:id (Bearer) <- { status, note? } -> { ok, changed }
+//                                    409 superseded: a superseded row keeps that status (note may change)
+//                                    400 nothing_supersedes: "superseded" needs a row that names this one
 //   DELETE /api/admin/submissions/:id (Bearer) -> { deleted }
 //   DELETE /api/admin/season/:season (Bearer, header X-Confirm: <season>) -> { deleted }
 //
@@ -62,6 +67,15 @@ export function assistWindow(now = Date.now(), cfg = season) {
 }
 
 export const PREVIEW_SEASON = "preview";
+
+// After closing, a family answering the board's needs_info request may still replace that
+// one application, for LATE_REPLACE_DAYS after closes. Nothing else gets past the gate.
+export const LATE_REPLACE_DAYS = 30;
+export function lateReplaceOk(prior, target, now = Date.now(), cfg = season) {
+  if (!prior || prior.status !== "needs_info" || prior.season !== target) return false;
+  const closes = localToUtc(cfg.closes, cfg.timezone);
+  return now > closes && now <= closes + LATE_REPLACE_DAYS * DAY;
+}
 
 export function makeId(seasonId, rand = crypto.getRandomValues.bind(crypto)) {
   const bytes = rand(new Uint8Array(5));
@@ -174,14 +188,22 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
     if (!isPreview && body.season !== season.season) return json({ error: "wrong_season" }, 400, cors);
     const g = gate(now);
     if (isPreview && g.open && !isPreviewer(req, env)) return json({ error: "wrong_season" }, 400, cors);
-    if (!isPreview && !g.open) return json({ error: g.reason }, 403, cors);
     const target = isPreview ? PREVIEW_SEASON : season.season;
     // An edit: the new row replaces an earlier one from the same season. Knowing the
     // earlier code is the proof; it is shown only to the person who submitted it.
-    let supersedes = null;
-    if (body.supersedes !== undefined && body.supersedes !== null && body.supersedes !== "") {
+    // The earlier row is read before the gate because it can open the gate (below).
+    const isEdit = body.supersedes !== undefined && body.supersedes !== null && body.supersedes !== "";
+    let prior = null;
+    if (isEdit) {
       if (typeof body.supersedes !== "string" || !ID_RE.test(body.supersedes)) return json({ error: "bad_supersedes" }, 400, cors);
-      const prior = await env.DB.prepare("SELECT id, season, status FROM submissions WHERE id = ?1").bind(body.supersedes).first();
+      prior = await env.DB.prepare("SELECT id, season, status FROM submissions WHERE id = ?1").bind(body.supersedes).first();
+    }
+    // The season gate. Inside the window (plus ten minutes of grace) any row may be
+    // replaced. After that, only a needs_info row, for 30 days, so a family can answer
+    // the board. Everything else, including a fresh application, waits for next year.
+    if (!isPreview && !g.open && !lateReplaceOk(prior, target, now)) return json({ error: g.reason }, 403, cors);
+    let supersedes = null;
+    if (isEdit) {
       if (!prior || prior.season !== target || prior.status === "superseded") return json({ error: "bad_supersedes" }, 400, cors);
       supersedes = prior.id;
     }
@@ -195,10 +217,17 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
     const createdAt = new Date().toISOString();
     for (let attempt = 0; attempt < 5; attempt++) {
       const id = makeId(target);
+      // The new row and the old row's status change go in one batch, which D1 runs as
+      // one transaction: both land or neither does, so a failure between them can never
+      // leave two live rows for one family. An id collision throws before anything is
+      // committed and the loop tries another id.
+      const stmts = [
+        env.DB.prepare("INSERT INTO submissions (id, season, lang, created_at, ciphertext, supersedes, self_copy) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
+          .bind(id, target, lang === "es" ? "es" : "en", createdAt, ciphertext, supersedes, selfCopy),
+      ];
+      if (supersedes) stmts.push(env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2 WHERE id = ?3").bind("superseded", createdAt, supersedes));
       try {
-        await env.DB.prepare("INSERT INTO submissions (id, season, lang, created_at, ciphertext, supersedes, self_copy) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
-          .bind(id, target, lang === "es" ? "es" : "en", createdAt, ciphertext, supersedes, selfCopy).run();
-        if (supersedes) await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2 WHERE id = ?3").bind("superseded", createdAt, supersedes).run();
+        await env.DB.batch(stmts);
         return json({ id, supersedes }, 201, cors);
       } catch (e) {
         if (!/UNIQUE|constraint/i.test(String(e))) throw e;
@@ -240,14 +269,16 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
   // the board's short public note, and dates come back; never the application.
   let sm = path.match(/^\/api\/status\/([A-Z0-9-]+)$/);
   if (req.method === "GET" && sm) {
-    const hit = await limited(env, "status:" + clientKey(req), cors);
+    // Status checks use the application tier (RATE, 30 a minute) under their own key, so
+    // a family refreshing its card neither spends the apply bucket nor the small AI one.
+    const hit = await limited(env, "status:" + clientKey(req), cors, "RATE");
     if (hit) return hit;
     if (!ID_RE.test(sm[1])) return json({ error: "not_found" }, 404, cors);
     const row = await env.DB.prepare("SELECT id, season, status, note, created_at, updated_at, supersedes, self_copy FROM submissions WHERE id = ?1").bind(sm[1]).first();
     if (!row) return json({ error: "not_found" }, 404, cors);
     let superseded_by = null;
     if (row.status === "superseded") {
-      const nxt = await env.DB.prepare("SELECT id FROM submissions WHERE supersedes = ?1").bind(row.id).first();
+      const nxt = await env.DB.prepare("SELECT id FROM submissions WHERE supersedes = ?1 ORDER BY created_at DESC LIMIT 1").bind(row.id).first();
       superseded_by = nxt ? nxt.id : null;
     }
     const status = row.status === "new" ? "fetched" : row.status;   // "new" and "fetched" both mean received
@@ -269,8 +300,9 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
       const s = url.searchParams.get("season") || season.season;
       const since = url.searchParams.get("since") || "";
       const sinceId = url.searchParams.get("since_id") || "";
+      // Never self_copy: the review tool has no key for it and no use for it.
       const { results } = await env.DB.prepare(
-        "SELECT id, season, lang, created_at, ciphertext, status, updated_at, supersedes FROM submissions WHERE season = ?1 AND (created_at > ?2 OR (created_at = ?2 AND id > ?3)) ORDER BY created_at, id LIMIT 500")
+        "SELECT id, season, lang, created_at, ciphertext, status, updated_at, supersedes, note FROM submissions WHERE season = ?1 AND (created_at > ?2 OR (created_at = ?2 AND id > ?3)) ORDER BY created_at, id LIMIT 500")
         .bind(s, since, sinceId).all();
       const last = results.length ? results[results.length - 1] : null;
       return json({ season: s, items: results, next_since: last ? last.created_at : since, next_id: last ? last.id : sinceId, has_more: results.length >= PAGE }, 200, cors);
@@ -279,7 +311,7 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
     let m = path.match(/^\/api\/admin\/submissions\/([A-Z0-9-]+)$/);
     if (req.method === "GET" && m) {
       // One row by id, for the review tool's retry of rows it could not read.
-      const row = await env.DB.prepare("SELECT id, season, lang, created_at, ciphertext, status, updated_at, supersedes FROM submissions WHERE id = ?1").bind(m[1]).first();
+      const row = await env.DB.prepare("SELECT id, season, lang, created_at, ciphertext, status, updated_at, supersedes, note FROM submissions WHERE id = ?1").bind(m[1]).first();
       return row ? json({ item: row }, 200, cors) : json({ error: "not_found" }, 404, cors);
     }
     if (req.method === "PATCH" && m) {
@@ -287,6 +319,20 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
       body = body && typeof body === "object" ? body : {};
       if (!STATUSES.has(body.status)) return json({ error: "bad_status" }, 400, cors);
       const note = typeof body.note === "string" ? body.note.trim().slice(0, MAX_NOTE) : "";
+      const row = await env.DB.prepare("SELECT id, status FROM submissions WHERE id = ?1").bind(m[1]).first();
+      if (!row) return json({ ok: true, changed: 0 }, 200, cors);
+      // "superseded" is what an edit does to the old row; by hand it needs a row that
+      // names this one, or the family's only live application would vanish.
+      if (body.status === "superseded") {
+        const nxt = await env.DB.prepare("SELECT id FROM submissions WHERE supersedes = ?1 ORDER BY created_at DESC LIMIT 1").bind(row.id).first();
+        if (!nxt) return json({ error: "nothing_supersedes" }, 400, cors);
+      }
+      // A superseded row stays superseded. A Mac that pushes before it has seen the
+      // replacement must not bring the old row back to life; the note may still change.
+      if (row.status === "superseded" && body.status !== "superseded") {
+        const nxt = await env.DB.prepare("SELECT id FROM submissions WHERE supersedes = ?1 ORDER BY created_at DESC LIMIT 1").bind(row.id).first();
+        return json({ error: "superseded", superseded_by: nxt ? nxt.id : null }, 409, cors);
+      }
       const r = await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2, note = ?4 WHERE id = ?3")
         .bind(body.status, new Date().toISOString(), m[1], note).run();
       return json({ ok: true, changed: r.meta?.changes ?? null }, 200, cors);

@@ -98,7 +98,7 @@ async function main() {
   const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : { model: MODEL, files: {} };
   const key = loadKey();
   let rendered = 0, chars = 0;
-  const MODE_STEPS = ["cityzip", "done"];   // the screens whose text changes with season.mode
+  const MODE_STEPS = ["cityzip", "mail", "done"];   // the screens whose text changes with season.mode
   for (const lang of ["en", "es"]) {
     mkdirSync(new URL(`${lang}/`, root), { recursive: true });
     const jobs = Object.entries(narration(lang)).map(([step, lines]) => [step, lines]);

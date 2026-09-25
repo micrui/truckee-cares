@@ -111,6 +111,9 @@ def build(base_path="", out=ROOT / "dist"):
     config = json.load(open(ROOT / "config" / "season.json"))
     if not config.get("recipients"):
         raise SystemExit("config/season.json has no recipients: the form would encrypt to nobody. Run node bin/keygen.mjs first.")
+    if len(config["recipients"]) < 2:
+        print("WARNING: config/season.json lists one recipient. A lost key loses every application. "
+              "Add the backup key before opening day (docs/runbook.md, One-time setup).", file=sys.stderr)
     base_path = base_path.rstrip("/")
     strings = load_yaml(SITE / "content" / "strings.yaml")
     schools = load_yaml(SITE / "content" / "schools.yaml")

@@ -25,6 +25,17 @@ let supersedes = "";     // code of the application this send replaces (an edit)
 let check = { open: false, code: "", busy: false, result: null, error: "" };   // "Check my application"
 let sentStatus = null;   // live status of the known application, for the welcome card
 let copyError = "";      // shown on the status card when the saved copy cannot be opened
+let statusFailed = false; // the welcome card's status fetch failed; offer a retry
+async function loadKnownStatus(code) {
+  statusFailed = false;
+  try { sentStatus = await withTimeout(fetchStatus(code), 8000); if (!sentStatus) statusFailed = true; }
+  catch (e) { statusFailed = true; }
+  // A code replaced by one this phone also knows is just clutter: drop it and show the newer one.
+  if (sentStatus && sentStatus.status === "superseded" && sentStatus.superseded_by && loadCodes().some((c) => c.id === sentStatus.superseded_by)) {
+    forgetCode(code); return loadKnownStatus(sentStatus.superseded_by);
+  }
+  if (cur === "welcome") { scrollTop = false; render(); }
+}
 async function fetchStatus(code, withCopy = false) {
   const r = await fetch(`${config.api_base}/api/status/${encodeURIComponent(code)}${withCopy ? "?copy=1" : ""}`, { cache: "no-store", headers: apiHeaders() });
   if (r.status === 404) return null;
@@ -37,7 +48,9 @@ function statusCard(st) {
   const head = key === "superseded" ? t("st_superseded", st.superseded_by || "") : t("st_" + key);
   const mode = st.mode && st.mode !== "pickup" ? st.mode : "";
   const textKey = key === "accepted" && mode ? `st_accepted_text_${mode}` : `st_${key}_text`;
-  const canChange = ["fetched", "needs_info"].includes(key);
+  // Sending is possible during the season, or for 30 days after close when the board asked for something.
+  const lateOk = key === "needs_info" && Date.now() <= localToUtc(config.closes, config.timezone) + 30 * 24 * 3600 * 1000;
+  const canChange = ["fetched", "needs_info"].includes(key) && (gate.open || lateOk);
   return `<div class="card status-card"><p class="muted">${esc(st.id)} · ${esc(t("check_sent_on", when))}</p>
     <p class="q-title" style="margin:6px 0">${esc(head)}</p>
     ${st.note ? `<p class="why">${esc(st.note)}</p>` : ""}
@@ -46,7 +59,7 @@ function statusCard(st) {
     ${canChange ? (codeKey(st.id) && st.has_copy
       ? `<button type="button" class="btn btn-primary" data-action="edit-copy" data-code="${esc(st.id)}" style="margin-top:12px">✏️ ${t("edit_resend")}</button>`
       : `<p class="muted" style="margin-top:12px">${t("st_change_other")}</p><button type="button" class="btn btn-ghost" data-action="redo" data-code="${esc(st.id)}">✏️ ${t("st_change_btn")}</button>`) : ""}
-    ${copyError ? `<p class="error">${esc(copyError)}</p>` : ""}
+    ${copyError ? `<p class="error">${esc(copyError)}</p><button type="button" class="btn btn-ghost" data-action="redo" data-code="${esc(st.id)}">✏️ ${t("st_change_btn")}</button>` : ""}
   </div>`;
 }
 let lastSupersedes = ""; // shown on the done screen after an edit
@@ -116,7 +129,9 @@ let sendReason = "";       // "" | "stale" | "busy" after a failed send
 let voiceGen = 0;          // dropped late TTS responses after the screen changed
 
 function blankState() {
-  return {
+  let helper = {};
+  try { helper = JSON.parse(sessionStorage.getItem("tcc-helper")) || {}; } catch (e) {}
+  return { ...{
     helper: "", helper_name: "", helper_phone: "", helper_org: "",
     first_name: "", last_name: "", phone: "", can_text: "", other_phone: "", email: "",
     other_adult: "", contact_lang: lang,
@@ -126,13 +141,15 @@ function blankState() {
     children: [], no_children: false,
     want_food: true, want_toys: true, want_coats: true, referral: "", notes: "",
     has_children: "", referral_choice: "", consent_all: false, remember: false,
-  };
+  }, ...helper };
 }
 function blankChild() { return { first_name: "", age: "", sex: "", school: "", school_other: "", coat: "", coat_size: "", more: "" }; }
 
 // ---------- helpers ----------
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const digits = (s) => String(s || "").replace(/\D/g, "");
+// A US number typed with the country code: keep the ten digits people mean.
+const phoneDigits = (s) => { const d = digits(s); return d.length === 11 && d.startsWith("1") ? d.slice(1) : d; };
 function t(key, ...args) {
   // Screens that talk about pickup have _mail and _deliver variants for the ICE fallback.
   const mode = config && config.mode && config.mode !== "pickup" ? config.mode : "";
@@ -140,13 +157,25 @@ function t(key, ...args) {
   return typeof v === "function" ? v(...args) : v ?? key;
 }
 const apiHeaders = (extra = {}) => ({ ...(previewToken ? { "x-preview": previewToken } : {}), ...extra });
-function saveDraft() { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state, supersedes, editReturn })); } catch (e) {} }
+const DRAFT_TTL_MS = 2 * 3600 * 1000;
+function saveDraft() {
+  // The done screen never writes answers, and a welcome with nothing typed clears any old draft.
+  const empty = !state.first_name && !state.phone && !state.street && !supersedes;
+  try {
+    if (view !== "form" || (cur === "welcome" && empty)) sessionStorage.removeItem(DRAFT_KEY);
+    else sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state, supersedes, editReturn, at: Date.now() }));
+  } catch (e) {}
+}
 function loadDraft() {
   try {
     const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY));
-    if (d && d.state) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; supersedes = d.supersedes || ""; editReturn = d.editReturn || null; }
+    if (d && d.state && Date.now() - (d.at || 0) < DRAFT_TTL_MS) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; supersedes = d.supersedes || ""; editReturn = d.editReturn || null; }
+    else sessionStorage.removeItem(DRAFT_KEY);
   } catch (e) {}
 }
+const DONE_KEY = "tcc-done";   // the done screen survives a reload so a helper can still read the code
+function saveDone() { try { sessionStorage.setItem(DONE_KEY, JSON.stringify({ id: doneId, helper: lastWasHelper, replaced: lastSupersedes, preview: previewMode, at: Date.now() })); } catch (e) {} }
+function loadDone() { try { const d = JSON.parse(sessionStorage.getItem(DONE_KEY)); if (d && d.id && Date.now() - (d.at || 0) < DRAFT_TTL_MS) return d; sessionStorage.removeItem(DONE_KEY); } catch (e) {} return null; }
 // Nothing about an application is kept on the device. Earlier builds could save answers
 // for next year; that is gone, and any old copy is removed at boot.
 function loadRemembered() { return null; }
@@ -168,7 +197,7 @@ function computeGate() {
   const opens = localToUtc(config.opens, config.timezone);
   const closes = localToUtc(config.closes, config.timezone);
   if (now < opens) return { open: false, reason: "not_open" };
-  if (now > closes) return { open: false, reason: "closed" };
+  if (now > closes + 10 * 60 * 1000) return { open: false, reason: "closed" };   // same grace as the Worker
   return { open: true, reason: null };
 }
 function inArea() {
@@ -190,9 +219,9 @@ function validate(id) {
   const req = (k) => { if (!String(state[k] ?? "").trim()) e[k] = t("required"); };
   const pick = (k) => { if (!state[k]) e[k] = t("pick_one"); };
   if (id === "helper") pick("helper");
-  if (id === "helper_info") { req("helper_name"); if (digits(state.helper_phone).length !== 10) e.helper_phone = t("bad_phone"); }
+  if (id === "helper_info") { req("helper_name"); if (phoneDigits(state.helper_phone).length !== 10) e.helper_phone = t("bad_phone"); }
   if (id === "name") { req("first_name"); req("last_name"); }
-  if (id === "phone") { if (digits(state.phone).length !== 10) e.phone = t("bad_phone"); pick("can_text"); }
+  if (id === "phone") { if (phoneDigits(state.phone).length !== 10) e.phone = t("bad_phone"); pick("can_text"); }
   if (id === "street") req("street");
   if (id === "cityzip") { pick("city"); if (state.city === "other") req("city_other"); if (digits(state.zip).length !== 5) e.zip = t("bad_zip"); }
   if (id === "mail") pick("mail_same");
@@ -252,14 +281,21 @@ function renderStep() {
   const last = id === "review";
   const nav = `<div class="nav-row">
     ${id !== "welcome" ? `<button class="btn btn-ghost" data-action="back">${t("back")}</button>` : ""}
-    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? (supersedes ? t("replace_send") : t("review_send")) : editReturn ? t("done_editing") : t("next")}</button></div>`;
+    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? (supersedes ? t("replace_send") : t("review_send")) : editReturn ? t("done_editing") : t("next")}</button></div>
+    ${id !== "welcome" && !(last && supersedes) ? `<p class="text-action"><button type="button" data-action="start-over">${t("start_over")}</button></p>` : ""}`;
   const q = (text, hint) => `<h1 class="q-title">${esc(text)}</h1>${hint ? `<p class="why">${esc(hint)}</p>` : ""}`;
 
   if (id === "welcome") {
     const sent = null;
     const latest = loadCodes()[0] || null;
-    const known = latest ? latest.id : "";
+    const known = latest ? latest.id : (sentStatus ? sentStatus.id : "");
     const status = sentStatus && sentStatus.id === known ? sentStatus : null;
+    const closedCard = !gate.open ? `<div class="closed" style="padding:8px 0 16px"><h2 class="q-title">${gate.reason === "not_open" ? t("not_open_title") : t("closed_title")}</h2>
+      <p>${gate.reason === "not_open" ? esc(t("not_open_text", fmtDate(localToUtc(config.opens, config.timezone)))) : t("closed_text")}</p></div>` : "";
+    const startBtn = gate.open ? `<button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>` : closedCard;
+    // Before the season opens there is nothing to look up; after it closes people still need their status.
+    const canCheck = gate.open || gate.reason === "closed" || !!known;
+    const anotherBtn = gate.open ? `<button class="btn btn-secondary btn-big btn-hero" data-action="new-family" style="margin-top:10px">👨‍👩‍👧 ${t("apply_another")}</button>` : closedCard;
     const checkBox = check.open ? `<div class="card"><h2 class="q-title" style="font-size:1.25rem">${t("check_title")}</h2><p class="hint">${t("check_hint")}</p>
         <form data-action="check-form" class="assist-form"><input id="check-code" type="text" value="${esc(check.code)}" placeholder="TCC-26-ABCDE" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="14" ${check.busy ? "disabled" : ""}><button class="btn btn-primary" ${check.busy ? "disabled" : ""}>${t("check_go")}</button></form>
         ${check.error ? `<p class="error">${esc(check.error)}</p>` : ""}</div>` : "";
@@ -267,17 +303,17 @@ function renderStep() {
     if (known) {
       return `<div class="step welcome"><h1>${t("welcome_title")}</h1>
         <div class="card"><p><strong>${t("your_application")}: ${esc(known)}</strong></p>
-          ${status ? statusCard(status) : `<p class="muted">${t("checking")}</p>`}
+          ${status ? statusCard(status) : statusFailed ? `<p class="error">${t("status_unavailable")}</p><p><button type="button" class="btn btn-ghost" data-action="status-retry">${t("try_again")}</button></p>` : `<p class="muted">${t("checking")}</p>`}
           <p class="small-links"><button type="button" class="btn btn-ghost" data-action="forget-code" data-code="${esc(known)}">${t("forget_code")}</button></p></div>
         ${sent ? `<button class="btn btn-primary btn-big" data-action="edit-sent">✏️ ${t("sent_edit")}</button>` : ""}
-        <button class="btn btn-secondary btn-big btn-hero" data-action="new-family" style="margin-top:10px">👨‍👩‍👧 ${t("apply_another")}</button>
+        ${anotherBtn}
         ${checkBox || `<p class="small-links"><button type="button" class="btn btn-ghost" data-action="check-open">🔎 ${t("check_other")}</button></p>`}
         <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
       </div>`;
     }
-    return `<div class="step welcome"><h1>${t("welcome_title")}</h1><p class="lead-short">${t("welcome_short")}</p>
-      <button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>
-      ${checkBox || `<button type="button" class="btn btn-ghost btn-big" data-action="check-open" style="margin-top:12px">🔎 ${t("check_btn")}</button>`}
+    return `<div class="step welcome"><h1>${t("welcome_title")}</h1>${gate.open ? `<p class="lead-short">${t("welcome_short")}</p>` : gate.reason === "closed" ? `<p class="lead-short">${t("closed_status_hint")}</p>` : ""}
+      ${startBtn}
+      ${canCheck ? checkBox || `<button type="button" class="btn btn-ghost btn-big" data-action="check-open" style="margin-top:12px">🔎 ${t("check_btn")}</button>` : ""}
       <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
       ${demoMode && voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
       ${demoMode && assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
@@ -335,13 +371,18 @@ function renderStep() {
     const kids = state.has_children === "yes" ? state.children.map((c) => `${c.first_name}, ${c.age}, ${c.sex === "boy" ? t("boy") : c.sex === "girl" ? t("girl") : "?"}${c.coat === "yes" ? ", 🧥" : ""}`).join("<br>") : t("no_children");
     const row = (label, val, sid) => `<dt>${esc(label)} <a href="#" class="edit" data-action="goto" data-screen="${sid}">${t("edit")}</a></dt><dd>${val}</dd>`;
     return `<div class="step summary"><h1 class="q-title">${t("review_title")}</h1><dl>
+      ${state.helper === "yes" ? row(t("helper_name"), esc(`${state.helper_name} · ${state.helper_phone}`), "helper_info") : ""}
       ${row(t("labels").name, esc(`${state.first_name} ${state.last_name}`), "name")}
       ${row(t("labels").phone, esc(state.phone), "phone")}
-      ${row(t("labels").address, esc(addr), "street")}
-      ${state.mail_same === "no" ? row(t("labels").mailing, esc(mail), "mail_addr") : ""}
-      ${row(t("labels").adults, esc(`${state.adults}${state.adult_coat_sizes.length ? " · 🧥 " + state.adult_coat_sizes.join(", ") : ""}`), "adults")}
-      ${row(t("labels").children, kids, "has_children")}</dl>
+      ${row(t("labels").address, esc(`${state.street}${state.unit ? " " + state.unit : ""}`), "street")}
+      ${row(t("labels").cityzip, esc(`${cityName} ${state.zip}`), "cityzip")}
+      ${row(t("labels").mailing, state.mail_same === "no" ? esc(mail) : esc(t("mail_yes_stmt")), state.mail_same === "no" ? "mail_addr" : "mail")}
+      ${row(t("labels").adults, esc(state.adults), "adults")}
+      ${row(t("labels").adult_coats, esc(state.adult_coat_sizes.length ? state.adult_coat_sizes.join(", ") : t("no")), "adult_coats")}
+      ${row(t("labels").children, kids, "has_children")}
+      ${row(t("labels").referral, esc(state.referral_choice === "other" ? (state.referral || t("referral_other")) : state.referral_choice && state.referral_choice !== "skip" ? t("referral_" + state.referral_choice) : "—"), "referral")}</dl>
       ${state.has_children === "yes" ? `<p><button type="button" class="btn btn-ghost" data-action="add-child">+ ${t("add_child")}</button></p>` : ""}
+      ${supersedes ? `<p class="text-action" style="text-align:left"><button type="button" data-action="cancel-edit">✖ ${t("cancel_edit")}</button></p>` : ""}
       <div class="field ${errors.consent_all ? "invalid" : ""}"><div class="choices stack"><label><input type="checkbox" name="consent_all" ${state.consent_all ? "checked" : ""}> ${esc(t("confirm_all"))}</label></div>
       ${errors.consent_all ? `<div class="msg" role="alert">${t("required")}</div>` : ""}</div>
       ${nav}</div>`;
@@ -376,8 +417,9 @@ function render() {
       ${lastSupersedes ? `<p>${esc(t("done_updated_text", lastSupersedes))}</p>` : ""}<p>${t("done_code")}</p><div class="code">${previewMode ? "TEST · " : ""}${esc(doneId)}</div>
       ${lastWasHelper ? `<p class="why">${t("done_helper_text")}</p>` : ""}
       <p>${t("done_text")}</p><p class="muted">${t("done_limited")}</p>
-      <p><button class="btn btn-ghost" data-action="again">${t("done_again")}</button></p></div>`;
-  } else if (!gate.open) {
+      <p><button class="btn ${lastWasHelper ? "btn-primary" : "btn-ghost"}" data-action="again">${lastWasHelper ? t("done_again") : t("done_see_status")}</button></p>
+      ${lastWasHelper ? "" : `<p class="small-links"><button type="button" class="btn btn-ghost small" data-action="again">${t("done_again")}</button></p>`}</div>`;
+  } else if (!gate.open && (gate.reason === "stale" || cur !== "welcome")) {
     body = gate.reason === "stale"
       ? `<div class="closed"><h1>${t("stale_title")}</h1><p>${t("stale_text")}</p><button type="button" class="btn btn-primary btn-big" data-action="reload">${t("reload")}</button></div>`
       : `<div class="closed"><h1>${gate.reason === "not_open" ? t("not_open_title") : t("closed_title")}</h1>
@@ -400,6 +442,7 @@ function render() {
   if (firstErr && Object.keys(errors).length) { firstErr.setAttribute("tabindex", "-1"); firstErr.scrollIntoView({ block: "center" }); firstErr.focus?.({ preventScroll: true }); }
 }
 function sendErrorCard() {
+  if (sendReason === "replace") return `<div class="card"><p class="error">${t("replace_failed")}</p><p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help_text_msg")}</a></p><button class="btn btn-ghost" data-action="send-as-new">${t("send_as_new")}</button></div>`;
   if (sendReason === "stale") return `<div class="card"><p class="error">${t("stale_text")}</p><button class="btn btn-primary" data-action="reload">${t("reload")}</button></div>`;
   if (sendReason === "busy") return `<div class="card"><p class="error">${t("send_busy")}</p></div>`;
   return `<div class="card"><p class="error">${t("send_error")}</p><p>${t("send_error_help")}</p><button class="btn btn-primary" data-action="submit">${t("retry")}</button></div>`;
@@ -520,7 +563,8 @@ function speakPage() {
   const stepEl = root.querySelector(".step, .done, .closed");
   const domText = stepEl ? [...stepEl.querySelectorAll("h1, h2, p, li, label, legend, .hint, dt, dd")].map((n) => n.textContent.trim()).filter(Boolean).join(". ") : "";
   // Dynamic pieces: a board notice or the preview warning first, the confirmation code last.
-  const head = [(config.announcement || {})[lang] || "", previewMode ? t("preview_spoken") : ""].filter(Boolean).join(". ");
+  const cardText = cur === "welcome" && root.querySelector(".status-card") ? [...root.querySelectorAll(".status-card p")].map((n) => n.textContent.trim()).filter(Boolean).join(". ") : "";
+  const head = [(config.announcement || {})[lang] || "", previewMode ? t("preview_spoken") : "", cardText].filter(Boolean).join(". ");
   const tail = view === "done" ? doneId.split("").join(" ") : "";
   const playMain = () => { if (audioManifest.files[name]) playUrl(`${base}/static/audio/${name}.mp3`, tail ? () => speakTail(tail) : null); else synthSpeak(domText); };
   if (head) speakTail(head, playMain); else playMain();
@@ -566,6 +610,7 @@ root.addEventListener("click", async (ev) => {
   if (a === "voice-review") { leaveVoice(); return; }
   if (a === "voice-send") { state.consent_all = true; state.remember = false; await submit(); return; }
   if (a === "reload") { location.reload(); return; }
+  if (a === "send-as-new") { supersedes = ""; clearSent(); sendError = false; sendReason = ""; await submit(); return; }
   if (a === "lang") {
     readInputs();
     const wasSpeaking = speaking || (voiceAudio && !voiceAudio.paused);
@@ -634,12 +679,22 @@ root.addEventListener("click", async (ev) => {
     return;
   }
   if (a === "forget-code") {
-    forgetCode(el.dataset.code); if (loadSent()?.id === el.dataset.code) clearSent(); sentStatus = null; scrollTop = false; render();
-    const nxt = loadCodes()[0]; if (nxt) fetchStatus(nxt.id).then((st) => { if (st && cur === "welcome") { sentStatus = st; scrollTop = false; render(); } }).catch(() => {});
+    // Forget everything about that family on this phone: the code, the key, any draft or answers in memory.
+    forgetCode(el.dataset.code); clearSent(); sentStatus = null; statusFailed = false; state = blankState(); supersedes = ""; editReturn = null; copyError = "";
+    scrollTop = false; render();
+    const nxt = loadCodes()[0]; if (nxt) loadKnownStatus(nxt.id);
     return;
   }
+  if (a === "status-retry") { const c = (loadCodes()[0] || {}).id || (sentStatus && sentStatus.id); if (c) { scrollTop = false; render(); loadKnownStatus(c); } return; }
+  if (a === "cancel-edit") { clearSent(); state = blankState(); supersedes = ""; editReturn = null; cur = "welcome"; const c = (loadCodes()[0] || {}).id; if (c && !sentStatus) loadKnownStatus(c); }
+  if (a === "start-over") { if (confirm(t("start_over_confirm"))) { clearSent(); state = blankState(); supersedes = ""; editReturn = null; errors = {}; cur = "welcome"; } else return; }
   if (a === "redo") { clearSent(); state = blankState(); supersedes = String(el.dataset.code || "").toUpperCase(); check = { open: false, code: "", busy: false, result: null, error: "" }; cur = "helper"; }
-  if (a === "again") { clearSent(); state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lastSupersedes = ""; }
+  if (a === "again") {
+    clearSent(); try { sessionStorage.removeItem(DONE_KEY); } catch (e) {}
+    const wasHelper = lastWasHelper;
+    state = blankState(); cur = wasHelper ? "name" : "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lastSupersedes = ""; lastWasHelper = false;
+    if (!wasHelper) { const c = loadCodes()[0]; if (c && !(sentStatus && sentStatus.id === c.id)) loadKnownStatus(c.id); }
+  }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
   errors = {}; saveDraft(); render();
 });
@@ -888,9 +943,9 @@ function payload() {
   const cityName = state.city === "other" ? state.city_other : state.city;
   return {
     version: 1, season: previewMode ? "preview" : config.season, lang, submitted_at: new Date().toISOString(),
-    helper: state.helper === "yes" ? { name: state.helper_name.trim(), phone: digits(state.helper_phone), org: state.helper_org.trim() } : null,
-    applicant: { first_name: state.first_name.trim(), last_name: state.last_name.trim(), phone: digits(state.phone), can_text: state.can_text === "yes",
-      other_phone: digits(state.other_phone), email: state.email.trim(), other_adult: state.other_adult.trim(), contact_lang: state.contact_lang },
+    helper: state.helper === "yes" ? { name: state.helper_name.trim(), phone: phoneDigits(state.helper_phone), org: state.helper_org.trim() } : null,
+    applicant: { first_name: state.first_name.trim(), last_name: state.last_name.trim(), phone: phoneDigits(state.phone), can_text: state.can_text === "yes",
+      other_phone: phoneDigits(state.other_phone), email: state.email.trim(), other_adult: state.other_adult.trim(), contact_lang: lang },
     address: { street: state.street.trim(), unit: state.unit.trim(), city: cityName, zip: digits(state.zip), in_area: inArea() },
     mailing: state.mail_same === "yes" ? null : { street: state.mail_street.trim(), city: state.mail_city.trim(), zip: digits(state.mail_zip) },
     household: { adults: Number(state.adults), adult_coat_sizes: state.adult_coat_sizes },
@@ -937,7 +992,7 @@ async function submit() {
       let err = ""; try { err = (await res.json()).error || ""; } catch (e) {}
       if (res.status === 403 && (err === "closed" || err === "not_open")) { gate = { open: false, reason: err }; view = "form"; voice = null; render(); return; }
       if (res.status === 400 && err === "wrong_season") { sendReason = "stale"; throw new Error(err); }
-      if (res.status === 400 && err === "bad_supersedes") { supersedes = ""; clearSent(); sending = false; return submit(); }
+      if (res.status === 400 && err === "bad_supersedes") { sendReason = "replace"; throw new Error(err); }
       if (res.status === 429) {
         sendReason = "busy";
         setTimeout(() => {
@@ -956,12 +1011,17 @@ async function submit() {
     doneId = data.id;
     lastSupersedes = supersedes; supersedes = ""; sentStatus = null;
     lastWasHelper = isHelper;
-    if (!isHelper) rememberCode(doneId, previewMode ? "preview" : config.season, new Date().toISOString(), selfKey);
+    if (!isHelper) { if (lastSupersedes) forgetCode(lastSupersedes); rememberCode(doneId, previewMode ? "preview" : config.season, new Date().toISOString(), selfKey); }
     clearSent();
     try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
     const fromVoice = view === "voice";
     view = "done"; voice = null;
+    // Helpers keep their own details for the next family; everything about this family goes.
+    const helperInfo = isHelper ? { helper: "yes", helper_name: state.helper_name, helper_phone: state.helper_phone, helper_org: state.helper_org } : {};
+    try { if (isHelper) sessionStorage.setItem("tcc-helper", JSON.stringify(helperInfo)); } catch (e) {}
+    state = { ...blankState(), ...helperInfo };
+    saveDone();
     if (fromVoice) speakAfter = "done";   // the person cannot read the code: say it, on the unlocked element
   } catch (e) {
     console.error(e); sendError = true;
@@ -998,7 +1058,7 @@ const VOICE_QS = [
   { id: "other", fields: ["other_adult"] },
   { id: "notes", fields: ["notes"], optional: true },
 ];
-const REQUIRED = [["first_name", (s) => s.first_name.trim()], ["last_name", (s) => s.last_name.trim()], ["phone", (s) => digits(s.phone).length === 10],
+const REQUIRED = [["first_name", (s) => s.first_name.trim()], ["last_name", (s) => s.last_name.trim()], ["phone", (s) => phoneDigits(s.phone).length === 10],
   ["street", (s) => s.street.trim()], ["city", (s) => s.city && (s.city !== "other" || s.city_other)], ["zip", (s) => digits(s.zip).length === 5],
   ["mail_street", (s) => s.mail_same !== "no" || s.mail_street.trim()],
   ["adults", (s) => !!s.adults], ["children", (s) => (s.has_children === "yes" && s.children.length) || s.has_children === "no"],
@@ -1260,8 +1320,11 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   previewMode = previewParam && (serverOpen !== true || !!previewToken);
   if (previewMode && gate.reason !== "stale") gate = { open: true, reason: null };
   try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
-  loadDraft();
+  const done = loadDone();
+  if (done && !!done.preview === previewMode) { view = "done"; doneId = done.id; lastWasHelper = !!done.helper; lastSupersedes = done.replaced || ""; }
+  else loadDraft();
+  if (!gate.open && view === "form") cur = "welcome";
   render();
   const known = (loadCodes()[0] || {}).id;
-  if (known && cur === "welcome") { try { sentStatus = await withTimeout(fetchStatus(known), 8000); if (cur === "welcome") { scrollTop = false; render(); } } catch (e) {} }
+  if (known && cur === "welcome") await loadKnownStatus(known);
 })();
