@@ -50,6 +50,7 @@ function statusCard(st) {
   </div>`;
 }
 let lastSupersedes = ""; // shown on the done screen after an edit
+let lastWasHelper = false; // the done screen tells a helper to hand the code to the family
 function loadSent() {
   try {
     const d = JSON.parse(sessionStorage.getItem(SENT_KEY));
@@ -373,6 +374,7 @@ function render() {
   } else if (view === "done") {
     body = `<div class="done"><h1>✅ ${lastSupersedes ? t("done_updated_title") : previewMode ? t("preview_done_title") : t("done_title")}</h1>
       ${lastSupersedes ? `<p>${esc(t("done_updated_text", lastSupersedes))}</p>` : ""}<p>${t("done_code")}</p><div class="code">${previewMode ? "TEST · " : ""}${esc(doneId)}</div>
+      ${lastWasHelper ? `<p class="why">${t("done_helper_text")}</p>` : ""}
       <p>${t("done_text")}</p><p class="muted">${t("done_limited")}</p>
       <p><button class="btn btn-ghost" data-action="again">${t("done_again")}</button></p></div>`;
   } else if (!gate.open) {
@@ -924,8 +926,11 @@ async function submit() {
     const enc = new Encrypter();
     for (const r of config.recipients) enc.addRecipient(r);
     const ciphertext = armor.encode(await enc.encrypt(JSON.stringify(payload())));
-    const selfKey = randomKey();
-    const self_copy = await makeSelfCopy(selfKey);
+    // A helper files for other people's families: their phone keeps no key and no code,
+    // and no self copy is stored, so nothing on that phone points at a family later.
+    const isHelper = state.helper === "yes";
+    const selfKey = isHelper ? "" : randomKey();
+    const self_copy = isHelper ? undefined : await makeSelfCopy(selfKey);
     const res = await fetch(`${config.api_base}/api/apply`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext, supersedes: supersedes || undefined, self_copy }) });
     if (!res.ok) {
@@ -950,7 +955,8 @@ async function submit() {
     const data = await res.json();
     doneId = data.id;
     lastSupersedes = supersedes; supersedes = ""; sentStatus = null;
-    rememberCode(doneId, previewMode ? "preview" : config.season, new Date().toISOString(), selfKey);
+    lastWasHelper = isHelper;
+    if (!isHelper) rememberCode(doneId, previewMode ? "preview" : config.season, new Date().toISOString(), selfKey);
     clearSent();
     try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
