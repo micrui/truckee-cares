@@ -371,7 +371,7 @@ def test_dashboard_shows_the_server_season_and_warns_when_config_differs(tmp_pat
     monkeypatch.setattr(sync, "fetch_status", lambda timeout=5: dict(info))
     assert console.refresh_server_info() == info
     out = console.dashboard(con)
-    assert "season <b>2026</b>" in out and "mode <b>pickup</b>" in out and "closed (not_open)" in out and "run git pull" not in out and "card warn" not in out
+    assert "season <b>2026</b>" in out and "mode <b>pickup</b>" in out and "not open yet" in out and "run git pull" not in out and "card warn" not in out
     # The server was switched to mail and this Mac has not pulled: loud, and the cards follow the server.
     monkeypatch.setattr(sync, "fetch_status", lambda timeout=5: {**info, "mode": "mail", "open": True, "reason": "open"})
     console.refresh_server_info()

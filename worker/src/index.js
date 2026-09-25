@@ -230,6 +230,9 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
         await env.DB.batch(stmts);
         return json({ id, supersedes }, 201, cors);
       } catch (e) {
+        // Another edit of the same code landed first (unique index on supersedes): refuse
+        // this one instead of retrying it under new ids.
+        if (/submissions\.supersedes/.test(String(e))) return json({ error: "bad_supersedes" }, 400, cors);
         if (!/UNIQUE|constraint/i.test(String(e))) throw e;
       }
     }
@@ -333,12 +336,22 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
         const nxt = await env.DB.prepare("SELECT id FROM submissions WHERE supersedes = ?1 ORDER BY created_at DESC LIMIT 1").bind(row.id).first();
         return json({ error: "superseded", superseded_by: nxt ? nxt.id : null }, 409, cors);
       }
-      const r = await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2, note = ?4 WHERE id = ?3")
+      const r = await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2, note = ?4 WHERE id = ?3 AND (status != 'superseded' OR ?1 = 'superseded')")
         .bind(body.status, new Date().toISOString(), m[1], note).run();
+      if ((r.meta?.changes ?? 1) === 0) {
+        // An edit landed between the read above and this write.
+        const nxt = await env.DB.prepare("SELECT id FROM submissions WHERE supersedes = ?1 ORDER BY created_at DESC LIMIT 1").bind(m[1]).first();
+        return json({ error: "superseded", superseded_by: nxt ? nxt.id : null }, 409, cors);
+      }
       return json({ ok: true, changed: r.meta?.changes ?? null }, 200, cors);
     }
     if (req.method === "DELETE" && m) {
-      const r = await env.DB.prepare("DELETE FROM submissions WHERE id = ?1").bind(m[1]).run();
+      const gone = await env.DB.prepare("SELECT supersedes FROM submissions WHERE id = ?1").bind(m[1]).first();
+      const stmts = [env.DB.prepare("DELETE FROM submissions WHERE id = ?1").bind(m[1])];
+      // Deleting a replacement gives the family back the application it replaced, as
+      // received (the board decides again), unless another replacement still names it.
+      if (gone && gone.supersedes) stmts.push(env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'superseded' AND NOT EXISTS (SELECT 1 FROM submissions WHERE supersedes = ?3)").bind("fetched", new Date().toISOString(), gone.supersedes));
+      const [r] = await env.DB.batch(stmts);
       return json({ deleted: r.meta?.changes ?? null }, 200, cors);
     }
 

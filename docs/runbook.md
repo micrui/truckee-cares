@@ -37,6 +37,7 @@ does, stop and ask.
    ```
    npx wrangler d1 create truckee-cares            # paste database_id into worker/wrangler.toml
    npx wrangler d1 execute truckee-cares --remote --file worker/schema.sql --config worker/wrangler.toml
+   # Rerun that line after pulling a change to worker/schema.sql; every statement is IF NOT EXISTS.
    bin/new-admin-token                              # writes ~/.config/truckee-cares/admin-token
    bin/push-secret admin-token ADMIN_TOKEN
    bin/set-secret preview-token                     # any long random word
@@ -201,7 +202,9 @@ pull` like any other replacement.
    accepted, hold, needs_info, declined, duplicate, out_of_area. `bin/review push` when
    done. The console's dashboard shows the season and mode the deployed Worker has; if it
    says this Mac's config differs, `git pull` before printing cards. On a second Mac,
-   `bin/review resync` before deciding, so the other Mac's decisions are here.
+   `bin/review pull`, then `bin/review resync` before deciding, so the other Mac's
+   decisions are here (pull first: a replacement that arrives after a resync would come
+   in without its "before the edit" line).
    `pull` fetches every server row it has not seen, 500 at a time, and reports how many it
    could not read. Those rows never hold up the rest; see "Undecryptable rows" below for
    what they mean and when to delete them. During the window, delete only rows you are
@@ -287,7 +290,9 @@ Two causes, two answers:
   TCC-26-XXXXX` (type the id back), or the "Delete from server" button on its task in the
   console. Deleting is permanent apart from D1 time travel (see "If applications were
   deleted by mistake"). The local list shrinks as each delete lands, so an interrupted
-  run can be rerun.
+  run can be rerun. Deleting a row that replaced an earlier one (its card says
+  "Replaces") gives the earlier application back to the family as received: the server
+  sets it to `fetched` again and the next `pull` brings it back for a decision.
 
 The failed list lives in the local database (`failed:<season>`, at most 5,000 ids per
 season) and is this Mac's alone: each board Mac keeps its own. `bin/review purge-local`

@@ -204,7 +204,8 @@ def server_card():
         cfg_err = ""
     info = SERVER.get("info")
     if isinstance(info, dict):
-        gate = "open" if info.get("open") else f"closed ({E(info.get('reason') or '?')})"
+        reason = info.get("reason") or ""
+        gate = "open" if info.get("open") else "not open yet" if reason == "not_open" else "closed" if reason == "closed" else f"closed ({E(reason or '?')})"
         line = f"Server: season <b>{E(info.get('season'))}</b> · mode <b>{E(info.get('mode'))}</b> · {gate} · {E(info.get('opens'))} to {E(info.get('closes'))}"
         drift = config_drift(cfg, info)
         warn = f"<p><b>config on this Mac differs from the server; run git pull</b> (differs: {E(', '.join(drift))}; the console and the cards follow the server).</p>" if drift else ""
@@ -215,7 +216,7 @@ def server_card():
 
 
 def close_form(t):
-    return f"""<form method="post" action="/tasks/{E(t['id'])}/close" class="inline"><input name="resolution" placeholder="note" style="min-height:36px;font:inherit;padding:4px 8px">
+    return f"""<form method="post" action="/tasks/{E(t['id'])}/close" class="inline"><button type="submit" disabled hidden tabindex="-1" aria-hidden="true"></button><input name="resolution" placeholder="note" style="min-height:36px;font:inherit;padding:4px 8px">
 <button class="btn btn-ghost small" name="status" value="done">Done</button> <button class="btn btn-ghost small" name="status" value="dismissed">Dismiss</button></form>"""
 
 
@@ -502,8 +503,8 @@ def make_handler(con, port):
                     if status != "needs_info":
                         # The note belongs to needs_info. Under any other status it is kept only
                         # when the person typed something new; the prefilled old note is dropped.
-                        old = con.execute("SELECT note FROM applications WHERE id=?", (app_id,)).fetchone()
-                        if old is not None and note.strip() == (old["note"] or "").strip():
+                        old = con.execute("SELECT status, note FROM applications WHERE id=?", (app_id,)).fetchone()
+                        if old is not None and status != old["status"] and note.strip() == (old["note"] or "").strip():
                             note = ""
                     set_decision(con, app_id, status, note)
                 ref = self.headers.get("referer") or ""

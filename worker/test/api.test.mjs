@@ -39,10 +39,17 @@ function fakeDB() {
           if (db.failOn && sql.startsWith(db.failOn)) throw new Error("D1_ERROR: storage caused object reset");
           if (sql.startsWith("INSERT")) {
             if (rows.has(args[0])) throw new Error("UNIQUE constraint failed");
+            if (args[5] && [...rows.values()].some((r) => r.supersedes === args[5])) throw new Error("UNIQUE constraint failed: submissions.supersedes");
             rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null, supersedes: args[5] ?? null, note: "", self_copy: args[6] ?? null });
             return { meta: { changes: 1 } };
           }
-          if (sql.startsWith("UPDATE")) { const r = rows.get(args[2]); if (r) { r.status = args[0]; r.updated_at = args[1]; if (args.length > 3) r.note = args[3]; } return { meta: { changes: r ? 1 : 0 } }; }
+          if (sql.startsWith("UPDATE")) {
+            const r = rows.get(args[2]);
+            if (r && /status != 'superseded'/.test(sql) && r.status === "superseded" && args[0] !== "superseded") return { meta: { changes: 0 } };
+            if (r && /status = 'superseded' AND NOT EXISTS/.test(sql) && (r.status !== "superseded" || [...rows.values()].some((o) => o.supersedes === args[2]))) return { meta: { changes: 0 } };
+            if (r) { r.status = args[0]; r.updated_at = args[1]; if (args.length > 3) r.note = args[3]; }
+            return { meta: { changes: r ? 1 : 0 } };
+          }
           if (sql.startsWith("DELETE") && /WHERE id =/.test(sql)) return { meta: { changes: rows.delete(args[0]) ? 1 : 0 } };
           if (sql.startsWith("DELETE")) { let n = 0; for (const [k, v] of rows) if (v.season === args[0]) { rows.delete(k); n++; } return { meta: { changes: n } }; }
         },
@@ -623,4 +630,52 @@ test("public status checks use the RATE tier under their own key, never the AI t
   assert.equal(r.status, 429);
   const none = env({ RATE: undefined });
   assert.equal((await handle(req("GET", `/api/status/${id}`), none, AFTER)).status, 503);
+});
+
+test("two edits of one application at once: the second is refused, not filed under a new id", async () => {
+  const e = env();
+  const first = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "en", ciphertext: CT } }), e, OPEN)).json();
+  // A replacement already names first.id while first still reads "new": the exact
+  // interleaving of two phones editing the same code in the same instant.
+  e.DB.rows.set("TCC-26-RACE1", { id: "TCC-26-RACE1", season: "2026", lang: "en", created_at: "2026-10-20T00:00:00.000Z", ciphertext: CT, status: "new", updated_at: null, supersedes: first.id, note: "", self_copy: null });
+  const res = await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "en", ciphertext: CT, supersedes: first.id } }), e, OPEN);
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).error, "bad_supersedes");
+  assert.equal([...e.DB.rows.values()].filter((r) => r.supersedes === first.id).length, 1, "one replacement per code");
+});
+
+test("PATCH loses the race to an edit: the write is refused with 409, never revives the row", async () => {
+  const e = env();
+  const first = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "en", ciphertext: CT } }), e, OPEN)).json();
+  // The row reads "new" at the SELECT; the UPDATE runs against a row an edit just superseded.
+  const realPrepare = e.DB.prepare.bind(e.DB);
+  let armed = true;
+  e.DB.prepare = (sql) => {
+    const stmt = realPrepare(sql);
+    if (armed && sql.startsWith("UPDATE submissions SET status")) {
+      armed = false;
+      const r = e.DB.rows.get(first.id); r.status = "superseded";
+      e.DB.rows.set("TCC-26-RACE2", { ...r, id: "TCC-26-RACE2", status: "new", supersedes: first.id });
+    }
+    return stmt;
+  };
+  const res = await handle(req("PATCH", `/api/admin/submissions/${first.id}`, { body: { status: "accepted" }, headers: { authorization: "Bearer secret-token" } }), e, OPEN);
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).superseded_by, "TCC-26-RACE2");
+  assert.equal(e.DB.rows.get(first.id).status, "superseded");
+});
+
+test("deleting a replacement gives the family back the application it replaced", async () => {
+  const e = env();
+  const first = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "en", ciphertext: CT } }), e, OPEN)).json();
+  const edit = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "en", ciphertext: CT, supersedes: first.id } }), e, OPEN)).json();
+  assert.equal(e.DB.rows.get(first.id).status, "superseded");
+  const res = await handle(req("DELETE", `/api/admin/submissions/${edit.id}`, { headers: { authorization: "Bearer secret-token" } }), e, OPEN);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).deleted, 1);
+  assert.equal(e.DB.rows.get(first.id).status, "fetched", "the old application is live again, as received");
+  // Deleting a plain application changes nothing else.
+  const other = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "en", ciphertext: CT } }), e, OPEN)).json();
+  await handle(req("DELETE", `/api/admin/submissions/${other.id}`, { headers: { authorization: "Bearer secret-token" } }), e, OPEN);
+  assert.equal(e.DB.rows.get(first.id).status, "fetched");
 });

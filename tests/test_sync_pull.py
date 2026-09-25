@@ -76,7 +76,13 @@ class Server:
             rows, r = self.find(sid)
             if method == "DELETE":
                 if r:
-                    rows.remove(r); return {"deleted": 1}
+                    rows.remove(r)
+                    old = r.get("supersedes")
+                    if old and not any(x.get("supersedes") == old for rs in self.rows.values() for x in rs):
+                        _, o = self.find(old)
+                        if o and o["status"] == "superseded":
+                            o["status"] = "fetched"   # the Worker gives the earlier application back
+                    return {"deleted": 1}
                 return {"deleted": 0}
             if method == "PATCH":
                 self.patches.append((sid, body["status"], body.get("note", "")))
@@ -624,3 +630,29 @@ def test_cli_resync_reports_counts(monkeypatch, tmp_path, capsys):
     cli.main(["resync", "--overwrite", "--season", "2026"])
     assert "1 overwritten" in capsys.readouterr().out and local(con, "TCC-A")["status"] == "accepted"
     assert sync.push_statuses(con) == 0
+
+
+def test_deleting_a_replacement_brings_the_earlier_application_back(monkeypatch, tmp_path):
+    from review.match import set_decision
+    ident = pyrage.x25519.Identity.generate()
+    first = row("TCC-A", "2026-10-20T10:00:00Z", ident, json.dumps(app_payload()), status="accepted", note="ok")
+    rows = {"2026": [first], "preview": []}
+    con, _, srv = setup(monkeypatch, tmp_path, rows, ident)
+    sync.pull(con)
+    # A junk row names the family's code; the server superseded the real application.
+    junk = {"id": "TCC-B", "season": "2026", "lang": "en", "created_at": "2026-10-21T10:00:00Z", "ciphertext": "not age at all", "status": "new", "note": "", "supersedes": "TCC-A"}
+    rows["2026"].append(junk); first["status"] = "superseded"
+    sync.pull(con)
+    assert "TCC-B" in sync.failed_ids(con, "2026")
+    # The cursor never fetches TCC-A again; resync (or a 409 on push) is what retires it here.
+    assert sync.resync(con)["superseded"] == 1
+    assert local(con, "TCC-A")["status"] == "superseded"
+    # The board deletes the junk row from its decrypt_error task; the next resync sees the
+    # earlier application live again and puts it back in the queue as new.
+    sync.delete_server(con, "TCC-B")
+    assert srv.status("TCC-A")[0] == "fetched"
+    stats = sync.resync(con)
+    assert stats["restored"] == 1
+    assert local(con, "TCC-A")["status"] == "new"
+    # An earlier row whose replacement is still live stays superseded.
+    assert sync.resync(con)["restored"] == 0

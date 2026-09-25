@@ -22,14 +22,15 @@ function screens() {
 let cur = "welcome";
 let editReturn = null;   // set when Edit is tapped on the review screen
 let supersedes = "";     // code of the application this send replaces (an edit)
+let lateEdit = false;    // an edit begun from a needs_info card after close; the Worker takes it for 30 days
 let check = { open: false, code: "", busy: false, result: null, error: "" };   // "Check my application"
 let sentStatus = null;   // live status of the known application, for the welcome card
 let copyError = "";      // shown on the status card when the saved copy cannot be opened
 let statusFailed = false; // the welcome card's status fetch failed; offer a retry
 async function loadKnownStatus(code) {
   statusFailed = false;
-  try { sentStatus = await withTimeout(fetchStatus(code), 8000); if (!sentStatus) statusFailed = true; }
-  catch (e) { statusFailed = true; }
+  try { sentStatus = await withTimeout(fetchStatus(code), 8000); statusFailed = sentStatus ? false : "gone"; }
+  catch (e) { statusFailed = "failed"; }
   // A code replaced by one this phone also knows is just clutter: drop it and show the newer one.
   if (sentStatus && sentStatus.status === "superseded" && sentStatus.superseded_by && loadCodes().some((c) => c.id === sentStatus.superseded_by)) {
     forgetCode(code); return loadKnownStatus(sentStatus.superseded_by);
@@ -79,7 +80,7 @@ const DRAFT_KEY = "tcc-draft";
 const REMEMBER_KEY = "tcc-remembered";
 const SENT_KEY = "tcc-sent";          // this session's sent application, so it can be edited
 const SENT_TTL_MS = 2 * 3600 * 1000;
-const CODES_KEY = "tcc-codes";        // confirmation codes sent from this phone this season (codes only, no answers)
+const CODES_KEY = "tcc-codes";        // confirmation codes sent from this phone this season (codes and copy keys, never answers)
 function loadCodes() {
   // Codes from this season, plus test codes while the page is in preview mode.
   try { const d = JSON.parse(localStorage.getItem(CODES_KEY)); if (Array.isArray(d)) return d.filter((c) => c && c.id && (c.season === (config && config.season) || (previewMode && c.season === "preview"))); } catch (e) {}
@@ -162,14 +163,14 @@ function saveDraft() {
   // The done screen never writes answers, and a welcome with nothing typed clears any old draft.
   const empty = !state.first_name && !state.phone && !state.street && !supersedes;
   try {
-    if (view !== "form" || (cur === "welcome" && empty)) sessionStorage.removeItem(DRAFT_KEY);
-    else sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state, supersedes, editReturn, at: Date.now() }));
+    if (view === "done" || (cur === "welcome" && empty)) sessionStorage.removeItem(DRAFT_KEY);
+    else sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state, supersedes, lateEdit, editReturn, at: Date.now() }));
   } catch (e) {}
 }
 function loadDraft() {
   try {
     const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY));
-    if (d && d.state && Date.now() - (d.at || 0) < DRAFT_TTL_MS) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; supersedes = d.supersedes || ""; editReturn = d.editReturn || null; }
+    if (d && d.state && Date.now() - (d.at || 0) < DRAFT_TTL_MS) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; supersedes = d.supersedes || ""; lateEdit = !!d.lateEdit && !!supersedes; editReturn = d.editReturn || null; }
     else sessionStorage.removeItem(DRAFT_KEY);
   } catch (e) {}
 }
@@ -303,7 +304,7 @@ function renderStep() {
     if (known) {
       return `<div class="step welcome"><h1>${t("welcome_title")}</h1>
         <div class="card"><p><strong>${t("your_application")}: ${esc(known)}</strong></p>
-          ${status ? statusCard(status) : statusFailed ? `<p class="error">${t("status_unavailable")}</p><p><button type="button" class="btn btn-ghost" data-action="status-retry">${t("try_again")}</button></p>` : `<p class="muted">${t("checking")}</p>`}
+          ${status ? statusCard(status) : statusFailed ? `<p class="error">${t(statusFailed === "gone" ? "status_gone" : "status_unavailable")}</p><p><button type="button" class="btn btn-ghost" data-action="status-retry">${t("try_again")}</button></p>` : `<p class="muted">${t("checking")}</p>`}
           <p class="small-links"><button type="button" class="btn btn-ghost" data-action="forget-code" data-code="${esc(known)}">${t("forget_code")}</button></p></div>
         ${sent ? `<button class="btn btn-primary btn-big" data-action="edit-sent">✏️ ${t("sent_edit")}</button>` : ""}
         ${anotherBtn}
@@ -419,11 +420,12 @@ function render() {
       <p>${t("done_text")}</p><p class="muted">${t("done_limited")}</p>
       <p><button class="btn ${lastWasHelper ? "btn-primary" : "btn-ghost"}" data-action="again">${lastWasHelper ? t("done_again") : t("done_see_status")}</button></p>
       ${lastWasHelper ? "" : `<p class="small-links"><button type="button" class="btn btn-ghost small" data-action="again">${t("done_again")}</button></p>`}</div>`;
-  } else if (!gate.open && (gate.reason === "stale" || cur !== "welcome")) {
+  } else if (!gate.open && !lateEdit && (gate.reason === "stale" || cur !== "welcome")) {
     body = gate.reason === "stale"
       ? `<div class="closed"><h1>${t("stale_title")}</h1><p>${t("stale_text")}</p><button type="button" class="btn btn-primary btn-big" data-action="reload">${t("reload")}</button></div>`
       : `<div class="closed"><h1>${gate.reason === "not_open" ? t("not_open_title") : t("closed_title")}</h1>
-      <p>${gate.reason === "not_open" ? esc(t("not_open_text", fmtDate(localToUtc(config.opens, config.timezone)))) : t("closed_text")}</p></div>`;
+      <p>${gate.reason === "not_open" ? esc(t("not_open_text", fmtDate(localToUtc(config.opens, config.timezone)))) : t("closed_text")}</p>
+      <button type="button" class="btn btn-ghost btn-big" data-action="closed-back">${t("back")}</button></div>`;
   } else {
     body = (idx > 0 ? `<div class="progress"><div class="bar"><div style="width:${pct}%"></div></div><div class="label">${t("step_of", idx, total)}</div></div>` : "") + renderStep();
     if (sendError) body += sendErrorCard();
@@ -442,7 +444,7 @@ function render() {
   if (firstErr && Object.keys(errors).length) { firstErr.setAttribute("tabindex", "-1"); firstErr.scrollIntoView({ block: "center" }); firstErr.focus?.({ preventScroll: true }); }
 }
 function sendErrorCard() {
-  if (sendReason === "replace") return `<div class="card"><p class="error">${t("replace_failed")}</p><p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help_text_msg")}</a></p><button class="btn btn-ghost" data-action="send-as-new">${t("send_as_new")}</button></div>`;
+  if (sendReason === "replace") return `<div class="card"><p class="error">${t("replace_failed")}</p><p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help_text_msg")}</a></p>${gate.open ? `<button class="btn btn-ghost" data-action="send-as-new">${t("send_as_new")}</button>` : ""}</div>`;
   if (sendReason === "stale") return `<div class="card"><p class="error">${t("stale_text")}</p><button class="btn btn-primary" data-action="reload">${t("reload")}</button></div>`;
   if (sendReason === "busy") return `<div class="card"><p class="error">${t("send_busy")}</p></div>`;
   return `<div class="card"><p class="error">${t("send_error")}</p><p>${t("send_error_help")}</p><button class="btn btn-primary" data-action="submit">${t("retry")}</button></div>`;
@@ -664,7 +666,7 @@ root.addEventListener("click", async (ev) => {
     const sent = loadSent();
     if (sent) { state = { ...blankState(), ...sent.state, consent_all: false }; supersedes = sent.id; previewMode = !!sent.preview || previewMode; cur = "review"; }
   }
-  if (a === "new-family") { clearSent(); state = blankState(); supersedes = ""; cur = "helper"; }
+  if (a === "new-family") { clearSent(); state = blankState(); supersedes = ""; lateEdit = false; copyError = ""; cur = "helper"; }
   if (a === "check-open") {
     check = { open: true, code: "", busy: false, result: null, error: "" }; scrollTop = false; render();
     root.querySelector("#check-code")?.focus();
@@ -674,25 +676,26 @@ root.addEventListener("click", async (ev) => {
     copyError = ""; el.disabled = true; el.textContent = t("opening_copy");
     try {
       const saved = await openSelfCopy(el.dataset.code);
-      state = { ...blankState(), ...saved, consent_all: false }; supersedes = el.dataset.code; editReturn = null; cur = "review"; saveDraft(); render();
+      state = { ...blankState(), ...saved, consent_all: false }; supersedes = el.dataset.code; editReturn = null; lateEdit = !gate.open; cur = "review"; saveDraft(); render();
     } catch (e) { console.error(e); copyError = t("st_copy_failed"); scrollTop = false; render(); }
     return;
   }
   if (a === "forget-code") {
     // Forget everything about that family on this phone: the code, the key, any draft or answers in memory.
-    forgetCode(el.dataset.code); clearSent(); sentStatus = null; statusFailed = false; state = blankState(); supersedes = ""; editReturn = null; copyError = "";
+    forgetCode(el.dataset.code); clearSent(); sentStatus = null; statusFailed = false; state = blankState(); supersedes = ""; lateEdit = false; editReturn = null; copyError = "";
     scrollTop = false; render();
     const nxt = loadCodes()[0]; if (nxt) loadKnownStatus(nxt.id);
     return;
   }
-  if (a === "status-retry") { const c = (loadCodes()[0] || {}).id || (sentStatus && sentStatus.id); if (c) { scrollTop = false; render(); loadKnownStatus(c); } return; }
-  if (a === "cancel-edit") { clearSent(); state = blankState(); supersedes = ""; editReturn = null; cur = "welcome"; const c = (loadCodes()[0] || {}).id; if (c && !sentStatus) loadKnownStatus(c); }
-  if (a === "start-over") { if (confirm(t("start_over_confirm"))) { clearSent(); state = blankState(); supersedes = ""; editReturn = null; errors = {}; cur = "welcome"; } else return; }
-  if (a === "redo") { clearSent(); state = blankState(); supersedes = String(el.dataset.code || "").toUpperCase(); check = { open: false, code: "", busy: false, result: null, error: "" }; cur = "helper"; }
+  if (a === "status-retry") { const c = (loadCodes()[0] || {}).id || (sentStatus && sentStatus.id); if (c) { statusFailed = false; scrollTop = false; render(); loadKnownStatus(c); } return; }
+  if (a === "cancel-edit") { clearSent(); state = blankState(); supersedes = ""; lateEdit = false; copyError = ""; editReturn = null; cur = "welcome"; const c = (loadCodes()[0] || {}).id; if (c && !sentStatus) loadKnownStatus(c); }
+  if (a === "closed-back") { clearSent(); state = blankState(); supersedes = ""; lateEdit = false; copyError = ""; editReturn = null; errors = {}; cur = "welcome"; }
+  if (a === "start-over") { if (confirm(t("start_over_confirm"))) { clearSent(); state = blankState(); supersedes = ""; lateEdit = false; copyError = ""; editReturn = null; errors = {}; cur = "welcome"; } else return; }
+  if (a === "redo") { clearSent(); state = blankState(); supersedes = String(el.dataset.code || "").toUpperCase(); lateEdit = !gate.open; copyError = ""; check = { open: false, code: "", busy: false, result: null, error: "" }; cur = "helper"; }
   if (a === "again") {
     clearSent(); try { sessionStorage.removeItem(DONE_KEY); } catch (e) {}
     const wasHelper = lastWasHelper;
-    state = blankState(); cur = wasHelper ? "name" : "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lastSupersedes = ""; lastWasHelper = false;
+    state = blankState(); cur = wasHelper ? "name" : "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lateEdit = false; copyError = ""; lastSupersedes = ""; lastWasHelper = false;
     if (!wasHelper) { const c = loadCodes()[0]; if (c && !(sentStatus && sentStatus.id === c.id)) loadKnownStatus(c.id); }
   }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
@@ -706,7 +709,7 @@ root.addEventListener("submit", async (ev) => {
     check.code = code; check.error = ""; check.result = null;
     if (!/^TCC-[A-Z0-9]{2}-[A-Z0-9]{5}$/.test(code)) { check.error = t("check_not_found"); scrollTop = false; render(); return; }
     check.busy = true; scrollTop = false; render();
-    try { const st = await fetchStatus(code); if (!st) check.error = t("check_not_found"); else { rememberCode(st.id, st.season, st.created_at); clearSent(); sentStatus = st; check.open = false; } }
+    try { const st = await fetchStatus(code); if (!st) check.error = t("check_not_found"); else { if (st.status === "superseded" && st.superseded_by && loadCodes().some((c) => c.id === st.superseded_by)) forgetCode(st.id); else rememberCode(st.id, st.season, st.created_at); clearSent(); sentStatus = st; check.open = false; } }
     catch (e) { check.error = t("send_error"); }
     check.busy = false; scrollTop = false; render();
     return;
@@ -970,7 +973,7 @@ async function submit() {
     view = "form"; voice = null; cur = bad; errors = validate(bad); render();
     return;
   }
-  if (!previewMode) {
+  if (!previewMode && !lateEdit) {
     const g = computeGate();
     if (!g.open) { const fromVoice = view === "voice"; gate = g; view = "form"; voice = null; render(); if (fromVoice) voiceSay(t("closed_text")); return; }
   }
@@ -990,7 +993,7 @@ async function submit() {
       body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext, supersedes: supersedes || undefined, self_copy }) });
     if (!res.ok) {
       let err = ""; try { err = (await res.json()).error || ""; } catch (e) {}
-      if (res.status === 403 && (err === "closed" || err === "not_open")) { gate = { open: false, reason: err }; view = "form"; voice = null; render(); return; }
+      if (res.status === 403 && (err === "closed" || err === "not_open")) { gate = { open: false, reason: err }; lateEdit = false; view = "form"; voice = null; render(); return; }
       if (res.status === 400 && err === "wrong_season") { sendReason = "stale"; throw new Error(err); }
       if (res.status === 400 && err === "bad_supersedes") { sendReason = "replace"; throw new Error(err); }
       if (res.status === 429) {
@@ -1009,7 +1012,7 @@ async function submit() {
     }
     const data = await res.json();
     doneId = data.id;
-    lastSupersedes = supersedes; supersedes = ""; sentStatus = null;
+    lastSupersedes = supersedes; supersedes = ""; lateEdit = false; sentStatus = null; copyError = "";
     lastWasHelper = isHelper;
     if (!isHelper) { if (lastSupersedes) forgetCode(lastSupersedes); rememberCode(doneId, previewMode ? "preview" : config.season, new Date().toISOString(), selfKey); }
     clearSent();
@@ -1323,7 +1326,7 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   const done = loadDone();
   if (done && !!done.preview === previewMode) { view = "done"; doneId = done.id; lastWasHelper = !!done.helper; lastSupersedes = done.replaced || ""; }
   else loadDraft();
-  if (!gate.open && view === "form") cur = "welcome";
+  if (!gate.open && view === "form" && !lateEdit) cur = "welcome";
   render();
   const known = (loadCodes()[0] || {}).id;
   if (known && cur === "welcome") await loadKnownStatus(known);

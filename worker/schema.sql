@@ -12,4 +12,6 @@ CREATE TABLE IF NOT EXISTS submissions (
   self_copy   TEXT                        -- the applicant's answers, encrypted on the phone to a key only the phone has
 );
 CREATE INDEX IF NOT EXISTS submissions_season ON submissions (season, created_at);
+-- One replacement per code: two edits of the same application at once cannot both land.
+CREATE UNIQUE INDEX IF NOT EXISTS submissions_supersedes ON submissions (supersedes) WHERE supersedes IS NOT NULL;
 -- Existing databases: ALTER TABLE submissions ADD COLUMN supersedes TEXT; ALTER TABLE submissions ADD COLUMN note TEXT; ALTER TABLE submissions ADD COLUMN self_copy TEXT;

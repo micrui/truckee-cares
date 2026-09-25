@@ -225,6 +225,17 @@ def mark_superseded(con, old_id, new_id=None):
     log(con, "superseded", old_id, f"replaced by {new_id}" if new_id else "replaced on the server")
 
 
+def retire_early(con, sid, by=None):
+    """The server superseded sid before its replacement was pulled here (a 409 on push, or
+    resync). The row leaves the queues now. The decision and note it carried are kept in
+    prior_status/prior_note, so the pull that brings the replacement still raises the
+    review_edit task and shows what the decision was."""
+    marks = ",".join("?" * len(LOCAL_DECISIONS))
+    con.execute(f"UPDATE applications SET prior_status=status, prior_note=note WHERE id=? AND status IN ({marks})", (sid, *LOCAL_DECISIONS))
+    retire_row(con, sid, "application was edited")
+    mark_superseded(con, sid, by)
+
+
 def edit_task(con, sid, old, changed):
     """One task for the person who decided on the old row: what the applicant changed,
     and, for needs_info, what we had asked for."""
@@ -249,17 +260,19 @@ def apply_edit(con, sid, payload, old):
     low-priority task instead."""
     changed = changed_fields(old["payload"], payload)
     prior, old_note = old["status"], old["note"] or ""
+    if prior not in LOCAL_DECISIONS and old.get("prior_status") in LOCAL_DECISIONS:
+        prior, old_note = old["prior_status"], old["prior_note"] or ""  # an edit of an edit nobody decided on yet: re-check the decision before it
     row = con.execute("SELECT status FROM applications WHERE id=?", (sid,)).fetchone()
     decided_elsewhere = row["status"] in DECIDED
     con.execute("UPDATE applications SET family_id=?, prior_status=?, prior_note=? WHERE id=?", (old["family_id"], prior, old_note, sid))
     if changed:
         retire_row(con, old["id"], "application was edited")
         if not decided_elsewhere and prior in LOCAL_DECISIONS:
-            edit_task(con, sid, old, changed)
+            edit_task(con, sid, {**old, "status": prior, "note": old_note}, changed)
     else:
         transfer_row(con, old["id"], sid)
         if not decided_elsewhere:
-            if prior != "new":  # the old row was matched already; its pairs came along, so matching is not repeated
+            if old["status"] != "new":  # the old row was matched already; its pairs came along, so matching is not repeated
                 con.execute("UPDATE applications SET status='matched', updated_at=? WHERE id=?", (now(), sid))
             add_task(con, "review_edit", "Resent without changes", app_id=sid,
                      detail=f"The applicant sent {old['id']} again without changing anything (it was {prior}" + (f", note: {old_note}" if old_note else "") + "). Set the status again if it still applies.")
@@ -298,7 +311,11 @@ def store_item(con, item, season, identities, cfg, preview, failed):
             con.execute("INSERT INTO applications(id,season,source,submitted_at,lang,status,note,payload,norm,server_status,server_note,updated_at,supersedes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (sid, season, "web", created, lang, local, srv_note, json.dumps(payload, ensure_ascii=False), json.dumps(norm), srv_status, srv_note, now(), supersedes))
             if supersedes:
-                old = con.execute("SELECT id, family_id, status, note, payload FROM applications WHERE id=?", (supersedes,)).fetchone()
+                old = con.execute("SELECT id, family_id, status, note, payload, prior_status, prior_note FROM applications WHERE id=?", (supersedes,)).fetchone()
+                if old and old["status"] == "superseded" and old["prior_status"] in LOCAL_DECISIONS \
+                        and not con.execute("SELECT 1 FROM applications WHERE supersedes=? AND id!=?", (supersedes, sid)).fetchone():
+                    # Retired by push (409) or resync before this replacement arrived: the decision it had is in prior_status.
+                    old = dict(old); old["status"], old["note"] = old["prior_status"], old["prior_note"] or ""
                 if old and old["status"] != "superseded":
                     old = dict(old); old["payload"] = json.loads(old["payload"])
                     apply_edit(con, sid, payload, old)
@@ -319,8 +336,10 @@ def store_item(con, item, season, identities, cfg, preview, failed):
             result = "failed"
             msg = safe_error(e)
             log(con, stage, sid, msg)
-            if srv_status == "superseded":
-                return "failed"  # a dead row nobody needs to read: no task, not retried
+            if srv_status == "superseded":  # a dead row nobody needs to read: no task, not retried; an earlier task closes
+                failed.pop(sid, None)
+                close_error_task(con, sid, "replaced on the server")
+                return "failed"
             read_error_task(con, sid, msg)
             failed[sid] = None
     if result != "failed" and sid in failed:
@@ -504,8 +523,7 @@ def push_statuses(db=None):
                 raise
             by = http_body(e).get("superseded_by")
             by = by if isinstance(by, str) and ID_RE.fullmatch(by) else None
-            retire_row(con, r["id"], "application was edited")
-            mark_superseded(con, r["id"], by)
+            retire_early(con, r["id"], by)
             log(con, "push_skipped", r["id"], "replaced on the server; pull to get the new one")
             continue
         con.execute("UPDATE applications SET server_status=?, server_note=? WHERE id=?", (want, note, r["id"]))
@@ -524,7 +542,7 @@ def resync(con, overwrite=False, season=None):
     if season:
         where += " AND season=?"; args = (season,)
     seasons = [r[0] for r in con.execute(f"SELECT DISTINCT season FROM applications WHERE {where}", args)]
-    stats = {"checked": 0, "refreshed": 0, "inherited": 0, "overwritten": 0, "superseded": 0, "missing": 0}
+    stats = {"checked": 0, "refreshed": 0, "inherited": 0, "overwritten": 0, "superseded": 0, "restored": 0, "missing": 0}
     q = lambda s: urllib.parse.quote(str(s), safe="")  # noqa: E731
     for s in seasons:
         remote, since, since_id = {}, "", ""
@@ -553,9 +571,16 @@ def resync(con, overwrite=False, season=None):
             if srv_status == "superseded":
                 if r["status"] != "superseded":
                     nxt = con.execute("SELECT id FROM applications WHERE supersedes=?", (r["id"],)).fetchone()
-                    retire_row(con, r["id"], "application was edited")
-                    mark_superseded(con, r["id"], nxt["id"] if nxt else None)
+                    retire_early(con, r["id"], nxt["id"] if nxt else None)
                     stats["superseded"] += 1
+            elif r["status"] == "superseded":
+                # The replacement was deleted on the server (junk that named a real code, or a
+                # test row): the family's earlier application is live again, and needs a look.
+                if not con.execute("SELECT 1 FROM applications WHERE supersedes=? AND status!='superseded'", (r["id"],)).fetchone():
+                    local = srv_status if srv_status in DECIDED else "new"
+                    con.execute("UPDATE applications SET status=?, note=?, updated_at=? WHERE id=?", (local, srv_note, now(), r["id"]))
+                    log(con, "resync_restored", r["id"], "its replacement was deleted on the server")
+                    stats["restored"] += 1
             elif srv_status in DECIDED:
                 same = r["status"] == srv_status and (r["note"] or "") == srv_note
                 if r["status"] in UNDECIDED:
@@ -566,6 +591,8 @@ def resync(con, overwrite=False, season=None):
                     con.execute("UPDATE applications SET status=?, note=?, updated_at=? WHERE id=?", (srv_status, srv_note, now(), r["id"]))
                     log(con, "resync_overwritten", r["id"], f"{r['status']} -> {srv_status}")
                     stats["overwritten"] += 1
+            elif r["status"] in UNDECIDED and (r["note"] or "") != srv_note:
+                con.execute("UPDATE applications SET note=?, updated_at=? WHERE id=?", (srv_note, now(), r["id"]))  # the other Mac's hold note
         con.commit()
     if stats["inherited"] or stats["overwritten"]:
         from .match import recompute_family
