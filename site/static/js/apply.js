@@ -61,6 +61,18 @@ const DRAFT_KEY = "tcc-draft";
 const REMEMBER_KEY = "tcc-remembered";
 const SENT_KEY = "tcc-sent";          // this session's sent application, so it can be edited
 const SENT_TTL_MS = 2 * 3600 * 1000;
+const CODES_KEY = "tcc-codes";        // confirmation codes sent from this phone this season (codes only, no answers)
+function loadCodes() {
+  try { const d = JSON.parse(localStorage.getItem(CODES_KEY)); if (Array.isArray(d)) return d.filter((c) => c && c.id && c.season === (config && config.season)); } catch (e) {}
+  return [];
+}
+function rememberCode(id) {
+  try {
+    const list = [{ id, season: config.season, sent_at: new Date().toISOString() }, ...loadCodes().filter((c) => c.id !== id)].slice(0, 3);
+    localStorage.setItem(CODES_KEY, JSON.stringify(list));
+  } catch (e) {}
+}
+function forgetCode(id) { try { localStorage.setItem(CODES_KEY, JSON.stringify(loadCodes().filter((c) => c.id !== id))); } catch (e) {} }
 const LANG_KEY = "tcc-lang";
 
 const root = document.getElementById("app");
@@ -215,16 +227,21 @@ function renderStep() {
 
   if (id === "welcome") {
     const sent = loadSent();
+    const latest = loadCodes()[0] || null;
     return `<div class="step welcome"><h1>${t("welcome_title")}</h1><p class="lead-short">${t("welcome_short")}</p>
       ${sent ? `<div class="card"><p><strong>${esc(t("sent_note", sent.id))}</strong></p>
         ${sentStatus && sentStatus.id === sent.id ? statusCard(sentStatus) : ""}
         <button class="btn btn-primary btn-big" data-action="edit-sent">✏️ ${t("sent_edit")}</button>
         <button class="btn btn-ghost btn-big" data-action="new-family" style="margin-top:10px">👨‍👩‍👧 ${t("sent_new")}</button></div>`
+      : latest ? `<div class="card"><p><strong>${t("your_application")}: ${esc(latest.id)}</strong></p>
+        ${sentStatus && sentStatus.id === latest.id ? statusCard(sentStatus) : `<p class="muted">${t("check_sent_on", new Date(latest.sent_at).toLocaleDateString(lang === "es" ? "es-MX" : "en-US", { month: "long", day: "numeric" }))}</p>`}
+        <p class="small-links"><button type="button" class="btn btn-ghost" data-action="forget-code" data-code="${esc(latest.id)}">${t("forget_code")}</button></p>
+        <button class="btn btn-secondary btn-big btn-hero" data-action="next" style="margin-top:10px">${t("start")}</button></div>`
       : `<button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>`}
       ${check.open ? `<div class="card"><h2 class="q-title" style="font-size:1.25rem">${t("check_title")}</h2><p class="hint">${t("check_hint")}</p>
         <form data-action="check-form" class="assist-form"><input id="check-code" type="text" value="${esc(check.code)}" placeholder="TCC-26-ABCDE" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="14" ${check.busy ? "disabled" : ""}><button class="btn btn-primary" ${check.busy ? "disabled" : ""}>${t("check_go")}</button></form>
         ${check.error ? `<p class="error">${esc(check.error)}</p>` : ""}
-        ${check.result ? statusCard(check.result) : ""}</div>` : `<button type="button" class="btn btn-ghost btn-big" data-action="check-open" style="margin-top:12px">🔎 ${t("check_btn")}</button>`}
+        ${check.result ? statusCard(check.result) : ""}</div>` : `<button type="button" class="btn btn-ghost btn-big" data-action="check-open" style="margin-top:12px">🔎 ${latest || sent ? t("check_other") : t("check_btn")}</button>`}
       <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
       ${demoMode && voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
       ${demoMode && assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
@@ -555,7 +572,13 @@ root.addEventListener("click", async (ev) => {
     if (sent) { state = { ...blankState(), ...sent.state, consent_all: false }; supersedes = sent.id; previewMode = !!sent.preview || previewMode; cur = "review"; }
   }
   if (a === "new-family") { clearSent(); state = blankState(); supersedes = ""; cur = "helper"; }
-  if (a === "check-open") { check = { open: true, code: "", busy: false, result: null, error: "" }; scrollTop = false; render(); root.querySelector("#check-code")?.focus(); return; }
+  if (a === "check-open") {
+    const known = loadSent()?.id || (loadCodes()[0] || {}).id || "";
+    check = { open: true, code: known, busy: false, result: null, error: "" }; scrollTop = false; render();
+    const inp = root.querySelector("#check-code"); if (inp) { inp.focus(); if (known) inp.select(); }
+    return;
+  }
+  if (a === "forget-code") { forgetCode(el.dataset.code); sentStatus = null; scrollTop = false; render(); return; }
   if (a === "redo") { clearSent(); state = blankState(); supersedes = String(el.dataset.code || "").toUpperCase(); check = { open: false, code: "", busy: false, result: null, error: "" }; cur = "helper"; }
   if (a === "again") { clearSent(); state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lastSupersedes = ""; }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
@@ -868,6 +891,7 @@ async function submit() {
     const data = await res.json();
     doneId = data.id;
     lastSupersedes = supersedes; supersedes = ""; sentStatus = null;
+    rememberCode(doneId);
     try { const { consent_all, ...keep } = state; sessionStorage.setItem(SENT_KEY, JSON.stringify({ id: doneId, sent_at: new Date().toISOString(), preview: previewMode, state: keep })); } catch (e) {}
     try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
@@ -1173,6 +1197,6 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
   loadDraft();
   render();
-  const sent = loadSent();
-  if (sent && cur === "welcome") { try { sentStatus = await withTimeout(fetchStatus(sent.id), 8000); if (cur === "welcome") { scrollTop = false; render(); } } catch (e) {} }
+  const known = loadSent()?.id || (loadCodes()[0] || {}).id;
+  if (known && cur === "welcome") { try { sentStatus = await withTimeout(fetchStatus(known), 8000); if (cur === "welcome") { scrollTop = false; render(); } } catch (e) {} }
 })();
