@@ -153,7 +153,7 @@ function choice(key, legend, options, opts = {}) {
   const name = opts.name || key;
   return `<fieldset class="field ${err ? "invalid" : ""}"><legend>${esc(legend)} ${opts.optional ? `<span class="muted">${t("optional")}</span>` : ""}</legend>
     ${opts.hint ? `<div class="hint">${esc(opts.hint)}</div>` : ""}
-    <div class="choices ${opts.stack ? "stack" : ""}">${options.map(([v, l]) =>
+    <div class="choices ${opts.stack ? "stack" : ""} ${opts.big ? "big" : ""}">${options.map(([v, l]) =>
       `<label><input type="radio" name="${name}" value="${esc(v)}" ${String(current) === String(v) ? "checked" : ""}> ${esc(l)}</label>`).join("")}</div>
     ${err ? `<div class="msg" role="alert">${esc(err)}</div>` : ""}</fieldset>`;
 }
@@ -194,7 +194,7 @@ function renderStep() {
         <button type="button" class="btn btn-secondary btn-big" data-action="freeform" ${freeform.busy ? "disabled" : ""}>${freeform.busy ? t("freeform_working") : t("freeform_go")}</button></div>` : ""}
     </div>`;
   }
-  if (id === "helper") return `<div class="step">${q(t("helper_q"), t("helper_hint"))}${choice("helper", "", yesno())}${nav}</div>`;
+  if (id === "helper") return `<div class="step">${q(t("helper_q"))}${choice("helper", "", [["no", t("helper_self")], ["yes", t("helper_other")]], { stack: true, big: true })}<p class="why">${esc(t("helper_hint"))}</p>${nav}</div>`;
   if (id === "helper_info") return `<div class="step">${q(t("helper_name"))}${field("helper_name", t("helper_name"))}${field("helper_phone", t("helper_phone"), { type: "tel", inputmode: "tel" })}${field("helper_org", t("helper_org"), { optional: true, hint: t("helper_org_hint") })}${nav}</div>`;
   if (id === "name") return `<div class="step">${q(t("q_name"))}${field("first_name", t("first_name"), { autocomplete: "given-name" })}${field("last_name", t("last_name"), { autocomplete: "family-name" })}${nav}</div>`;
   if (id === "phone") return `<div class="step">${q(t("q_phone"), t("you_why"))}${field("phone", t("phone"), { type: "tel", inputmode: "tel", autocomplete: "tel", hint: t("phone_hint") })}${choice("can_text", t("can_text"), yesno())}${nav}</div>`;
@@ -205,15 +205,15 @@ function renderStep() {
       ${field("zip", t("zip"), { inputmode: "numeric", autocomplete: "postal-code", maxlength: 5 })}
       <p class="why" id="out-of-area" ${state.zip && digits(state.zip).length === 5 && !inArea() ? "" : "hidden"}>${esc(t("out_of_area"))}</p>${nav}</div>`;
   }
-  if (id === "mail") return `<div class="step">${q(t("mail_same"), t("mail_why"))}${choice("mail_same", "", yesno())}${nav}</div>`;
+  if (id === "mail") return `<div class="step">${q(t("mail_same"))}${choice("mail_same", "", [["yes", t("mail_yes_stmt")], ["no", t("mail_no_stmt")]], { stack: true, big: true })}<p class="why">${esc(t("mail_why"))}</p>${nav}</div>`;
   if (id === "mail_addr") return `<div class="step">${q(t("q_mail_addr"))}${field("mail_street", t("mail_street"))}${field("mail_city", t("mail_city"), { optional: true })}${field("mail_zip", t("mail_zip"), { inputmode: "numeric", maxlength: 5, optional: true })}${nav}</div>`;
   if (id === "adults") return `<div class="step">${q(t("adults"))}${choice("adults", "", [1, 2, 3, 4, 5, 6].map((n) => [n, String(n)]))}${nav}</div>`;
-  if (id === "adult_coats") return `<div class="step">${q(t("adult_coats"))}${choice("adult_coats", "", yesno())}
+  if (id === "adult_coats") return `<div class="step">${q(t("adult_coats"))}${choice("adult_coats", "", [["yes", t("coats_yes_stmt")], ["no", t("coats_no_stmt")]], { stack: true, big: true })}
       ${state.adult_coats === "yes" ? `<fieldset class="field ${errors.adult_coat_sizes ? "invalid" : ""}"><legend>${t("adult_coat_sizes")}</legend><div class="hint">${t("adult_coat_hint")}</div>
         <div class="choices">${state.adult_coat_sizes.map((sz, i) => `<label><input type="checkbox" checked data-action="rm-size" data-i="${i}"> ${esc(sz)}</label>`).join("")}</div>
         <div class="choices" style="margin-top:8px">${ADULT_SIZES.map((sz) => `<button type="button" class="btn btn-ghost" data-action="add-size" data-size="${sz}">+ ${sz}</button>`).join("")}</div>
         ${errors.adult_coat_sizes ? `<div class="msg" role="alert">${esc(errors.adult_coat_sizes)}</div>` : ""}</fieldset>` : ""}${nav}</div>`;
-  if (id === "has_children") return `<div class="step">${q(t("q_has_children"), t("children_why"))}${choice("has_children", "", yesno())}${nav}</div>`;
+  if (id === "has_children") return `<div class="step">${q(t("q_has_children"))}${choice("has_children", "", [["yes", t("kids_yes_stmt")], ["no", t("kids_no_stmt")]], { stack: true, big: true })}<p class="why">${esc(t("children_why"))}</p>${nav}</div>`;
   const m = id.match(/^child:(\d+):(a|b|more)$/);
   if (m) {
     const i = +m[1]; const c = state.children[i] || blankChild();
@@ -225,7 +225,7 @@ function renderStep() {
       ${choice(`child_${i}_sex`, t("child_sex"), [["boy", t("boy")], ["girl", t("girl")]], { value: c.sex })}
       ${choice(`child_${i}_coat`, t("child_coat"), yesno(), { value: c.coat })}
       ${c.coat === "yes" ? select(`child_${i}_coat_size`, t("child_coat_size"), CHILD_SIZES.map((sz) => [sz, sz]), { value: c.coat_size, optional: true }) : ""}${nav}</div>`;
-    return `<div class="step">${q(t("q_child_more"))}${choice(`child_${i}_more`, "", yesno(), { value: c.more })}${nav}</div>`;
+    return `<div class="step">${q(t("q_child_more"))}${choice(`child_${i}_more`, "", [["yes", t("more_yes_stmt")], ["no", t("more_no_stmt")]], { value: c.more, stack: true, big: true })}${nav}</div>`;
   }
   if (id === "referral") {
     const opts = [["school", t("referral_school")], ["church", t("referral_church")], ["frc", t("referral_frc")], ["friend", t("referral_friend")], ["other", t("referral_other")], ["skip", t("referral_skip")]];
