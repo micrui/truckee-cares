@@ -161,3 +161,24 @@ recipients unnoticed (the library would allow it, so the build and the form now 
 empty recipient list); that the key backup story had no
 mechanism (it is a file in Apple Passwords, now with a rehearsal step); and that
 "comprobante de domicilio" is too bureaucratic (it is the term families already know).
+
+## 2026-09-25 One decision per screen, help first, demos out of the way
+
+Mike's review after a day of use: the primary users are Spanish-speaking mothers with
+limited English and limited reading, and the form asked too much per page. The form is
+now one decision per screen (helper? name; phone; street; city and ZIP; mail the same?;
+adults; adult coats; children?; then name and age, boy or girl and coat, another child?
+for each child; who told you; one confirmation). The screen list is computed from the
+answers, so a family with no children never sees the child screens. Three consent boxes
+became one sentence with one box. Programs are derived from the answers instead of
+asked. School and free-text notes were dropped from the form.
+
+Help is the second button on every screen: a sheet with Call, Text, WhatsApp, and the
+question chat, in that order. The voice-first mode and the "in your own words" box are
+kept as a demo behind `?voice` on the URL; they are not shown to applicants, because a
+recording-driven dialogue is not the same as a person and the plain form now asks one
+thing at a time anyway.
+
+The home page leads with the application and the volunteer help line. Encryption talk
+moved off the home page to the privacy page and a new "How it's built" page for partner
+agencies.

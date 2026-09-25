@@ -1,48 +1,34 @@
-title: {en: Help for Truckee families this holiday season, es: Ayuda para familias de Truckee en estas fiestas}
+title: {en: Help for your family this holiday season, es: Ayuda para su familia en estas fiestas}
 lead:
-  en: >
-    Truckee Community Cares gives grocery gift cards, a toy for each child, and warm coats to
-    families in Truckee and Soda Springs who need a hand in December. All volunteer. All faiths. No cost.
-  es: >
-    Truckee Community Cares da tarjetas de regalo para el súper, un juguete para cada niño y
-    abrigos a familias de Truckee y Soda Springs que necesitan una mano en diciembre.
-    Todo con voluntarios. Todas las creencias. Sin costo.
+  en: Grocery gift cards, a toy for each child, and warm coats. Free, for families in Truckee and Soda Springs.
+  es: Tarjetas para el súper, un juguete para cada niño y abrigos. Gratis, para familias de Truckee y Soda Springs.
 apply_cta: {en: Apply for help, es: Solicitar ayuda}
 apply_sub:
-  en: Takes about 5 minutes on your phone. English or Spanish.
-  es: Toma unos 5 minutos en su celular. En español o inglés.
-donate_cta: {en: Donate, es: Donar}
-donate_sub:
-  en: Every dollar goes to gift cards, toys and coats.
-  es: Cada dólar se convierte en tarjetas, juguetes y abrigos.
+  en: About 5 minutes on your phone. Spanish or English.
+  es: Unos 5 minutos en su celular. En español o inglés.
+help_title:
+  en: "Need a hand? A volunteer can help you apply."
+  es: "¿Necesita ayuda? Un voluntario le ayuda a llenar la solicitud."
+help_call: {en: Call, es: Llamar}
+help_text: {en: Text, es: Texto}
 how_title: {en: How it works, es: Cómo funciona}
 how:
   - title: {en: Apply, es: Solicite}
     text:
-      en: Fill out the short form while applications are open. One application per family.
-      es: Llene el formulario corto mientras las solicitudes estén abiertas. Una solicitud por familia.
+      en: Answer a few short questions. One application per family.
+      es: Conteste unas preguntas cortas. Una solicitud por familia.
   - title: {en: We confirm, es: Confirmamos}
     text:
-      en: If we can help, you get a text and a card in the mail in early December.
-      es: Si podemos ayudar, recibirá un texto y una tarjeta por correo a principios de diciembre.
+      en: If we can help, you get a text and a letter in early December.
+      es: Si podemos ayudar, recibirá un texto y una carta a principios de diciembre.
   - title: {en: Pick up, es: Recoja}
     text:
-      en: Bring your card on distribution day in mid-December. We will tell you where and when.
-      es: Traiga su tarjeta el día de la entrega a mediados de diciembre. Le diremos dónde y cuándo.
-privacy_title: {en: Your information stays private, es: Su información es privada}
-privacy_text:
-  en: >
-    The application you send is locked with encryption before it leaves your phone. Only our
-    volunteers can open it. If you use the microphone or the help chat, what you say is sent to a
-    speech and language service to fill in the form, and we do not keep it. We never ask about
-    immigration status. The internet copy of your application is deleted after distribution day.
-  es: >
-    La solicitud que envía se cierra con cifrado antes de salir de su celular. Solo nuestros
-    voluntarios pueden abrirla. Si usa el micrófono o el chat de ayuda, lo que dice se envía a un
-    servicio de voz y lenguaje para llenar el formulario, y no lo guardamos. Nunca preguntamos sobre
-    estatus migratorio. La copia en internet de su solicitud se borra después del día de entrega.
-stats_title: {en: Last season, es: La temporada pasada}
-stats:
-  - {n: "285", label: {en: families, es: familias}}
-  - {n: "65", label: {en: seniors, es: personas mayores}}
-  - {n: "1,000+", label: {en: neighbors helped, es: vecinos ayudados}}
+      en: Bring your letter on pickup day in mid-December.
+      es: Traiga su carta el día de la entrega a mediados de diciembre.
+donate_title:
+  en: "Want to help a neighbor?"
+  es: "¿Quiere ayudar a un vecino?"
+donate_cta: {en: Donate, es: Donar}
+donate_sub:
+  en: Every dollar goes to gift cards, toys and coats.
+  es: Cada dólar se convierte en tarjetas, juguetes y abrigos.

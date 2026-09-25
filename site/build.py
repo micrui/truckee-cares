@@ -32,6 +32,7 @@ PAGES = {
     "volunteer": "page.html",
     "about": "page.html",
     "privacy": "page.html",
+    "tech": "page.html",
 }
 
 # Photos in the home page strip, in order. Files live in site/static/img/photos/.

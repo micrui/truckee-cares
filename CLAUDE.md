@@ -52,7 +52,8 @@ anything that could hurt them.** Every change is judged against that first.
 
 ## Where things are
 
-- Form steps and validation: site/static/js/apply.js. Text: site/static/js/apply-strings.js.
+- Form screens (one decision each, computed by screens()) and validation: site/static/js/apply.js.
+  Text: site/static/js/apply-strings.js. Voice-first and free-form demos show only with ?voice.
 - Site pages: site/content/*.yaml (both languages in one file), templates in site/templates.
 - API: worker/src/index.js. Live help: worker/src/assist.js. Schema: worker/schema.sql.
 - Matching: review/match.py (rules), review/judge.py (Claude), review/console.py (UI).

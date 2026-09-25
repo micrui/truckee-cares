@@ -7,7 +7,21 @@
 import { STRINGS, ADULT_SIZES, CHILD_SIZES } from "./apply-strings.js";
 import { Encrypter, armor } from "./age.js";
 
-const STEPS = ["welcome", "you", "home", "household", "children", "programs", "review"];
+// One decision per screen. The list depends on the answers so far (helper details,
+// mailing address, one pair of screens per child), so it is computed, not fixed.
+function screens() {
+  const list = ["welcome", "helper"];
+  if (state.helper === "yes") list.push("helper_info");
+  list.push("name", "phone", "street", "cityzip", "mail");
+  if (state.mail_same === "no") list.push("mail_addr");
+  list.push("adults", "adult_coats", "has_children");
+  if (state.has_children === "yes") state.children.forEach((_, i) => list.push(`child:${i}:a`, `child:${i}:b`, `child:${i}:more`));
+  list.push("referral", "review");
+  return list;
+}
+let cur = "welcome";
+const stepIndex = () => Math.max(0, screens().indexOf(cur));
+let demoMode = false;   // ?voice: shows the voice-first and free-form demos on the welcome screen
 const DRAFT_KEY = "tcc-draft";
 const REMEMBER_KEY = "tcc-remembered";
 const LANG_KEY = "tcc-lang";
@@ -17,7 +31,6 @@ const base = root.dataset.base || "";
 let lang = root.dataset.lang || "en";
 let config = null;
 let strings = STRINGS[lang];
-let step = 0;
 let state = blankState();
 let errors = {};
 let gate = { open: true, reason: null };
@@ -38,10 +51,10 @@ function blankState() {
     adults: "", adult_coats: "", adult_coat_sizes: [],
     children: [], no_children: false,
     want_food: true, want_toys: true, want_coats: true, referral: "", notes: "",
-    consent_area: false, consent_one: false, consent_true: false, remember: false,
+    has_children: "", referral_choice: "", consent_all: false, remember: false,
   };
 }
-function blankChild() { return { first_name: "", age: "", sex: "", school: "", school_other: "", coat: "", coat_size: "" }; }
+function blankChild() { return { first_name: "", age: "", sex: "", school: "", school_other: "", coat: "", coat_size: "", more: "" }; }
 
 // ---------- helpers ----------
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -53,8 +66,8 @@ function t(key, ...args) {
   return typeof v === "function" ? v(...args) : v ?? key;
 }
 const apiHeaders = (extra = {}) => ({ ...(previewToken ? { "x-preview": previewToken } : {}), ...extra });
-function saveDraft() { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ step, state })); } catch (e) {} }
-function loadDraft() { try { const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY)); if (d && d.state) { state = { ...blankState(), ...d.state }; step = d.step || 0; } } catch (e) {} }
+function saveDraft() { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state })); } catch (e) {} }
+function loadDraft() { try { const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY)); if (d && d.state) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; } } catch (e) {} }
 function loadRemembered() { try { return JSON.parse(localStorage.getItem(REMEMBER_KEY)); } catch (e) { return null; } }
 function fmtDate(iso) { return new Date(iso).toLocaleDateString(lang === "es" ? "es-MX" : "en-US", { month: "long", day: "numeric", timeZone: config.timezone }); }
 function localToUtc(iso, tz) {
@@ -91,43 +104,34 @@ function setLang(l) {
 }
 
 // ---------- validation ----------
-function validate(name) {
+function validate(id) {
   const e = {};
   const req = (k) => { if (!String(state[k] ?? "").trim()) e[k] = t("required"); };
-  if (name === "you") {
-    if (!state.helper) e.helper = t("pick_one");
-    if (state.helper === "yes") { req("helper_name"); if (digits(state.helper_phone).length !== 10) e.helper_phone = t("bad_phone"); }
-    req("first_name"); req("last_name");
-    if (digits(state.phone).length !== 10) e.phone = t("bad_phone");
-    if (!state.can_text) e.can_text = t("pick_one");
-    if (state.other_phone && digits(state.other_phone).length !== 10) e.other_phone = t("bad_phone");
+  const pick = (k) => { if (!state[k]) e[k] = t("pick_one"); };
+  if (id === "helper") pick("helper");
+  if (id === "helper_info") { req("helper_name"); if (digits(state.helper_phone).length !== 10) e.helper_phone = t("bad_phone"); }
+  if (id === "name") { req("first_name"); req("last_name"); }
+  if (id === "phone") { if (digits(state.phone).length !== 10) e.phone = t("bad_phone"); pick("can_text"); }
+  if (id === "street") req("street");
+  if (id === "cityzip") { pick("city"); if (state.city === "other") req("city_other"); if (digits(state.zip).length !== 5) e.zip = t("bad_zip"); }
+  if (id === "mail") pick("mail_same");
+  if (id === "mail_addr") { req("mail_street"); if (state.mail_zip && digits(state.mail_zip).length !== 5) e.mail_zip = t("bad_zip"); }
+  if (id === "adults") pick("adults");
+  if (id === "adult_coats") { pick("adult_coats"); if (state.adult_coats === "yes" && !state.adult_coat_sizes.length) e.adult_coat_sizes = t("pick_one"); }
+  if (id === "has_children") pick("has_children");
+  const m = id.match(/^child:(\d+):(a|b|more)$/);
+  if (m) {
+    const c = state.children[+m[1]];
+    if (!c) e.children = t("required");
+    else if (m[2] === "a") {
+      if (!c.first_name.trim()) e[`child_${m[1]}_first_name`] = t("required");
+      const a = Number(c.age); if (c.age === "" || !Number.isInteger(a) || a < 0 || a > 18) e[`child_${m[1]}_age`] = t("bad_age");
+    } else if (m[2] === "b") {
+      if (!c.sex) e[`child_${m[1]}_sex`] = t("pick_one");
+      if (!c.coat) e[`child_${m[1]}_coat`] = t("pick_one");
+    } else if (!c.more) e[`child_${m[1]}_more`] = t("pick_one");
   }
-  if (name === "home") {
-    req("street"); req("city");
-    if (state.city === "other") req("city_other");
-    if (digits(state.zip).length !== 5) e.zip = t("bad_zip");
-    if (!state.mail_same) e.mail_same = t("pick_one");
-    if (state.mail_same === "no") { req("mail_street"); if (state.mail_zip && digits(state.mail_zip).length !== 5) e.mail_zip = t("bad_zip"); }
-  }
-  if (name === "household") {
-    if (!state.adults) e.adults = t("pick_one");
-    if (!state.adult_coats) e.adult_coats = t("pick_one");
-  }
-  if (name === "children") {
-    if (!state.no_children && state.children.length === 0) e.children = t("required");
-    state.children.forEach((c, i) => {
-      if (!c.first_name.trim()) e[`child_${i}_first_name`] = t("required");
-      const a = Number(c.age); if (c.age === "" || !Number.isInteger(a) || a < 0 || a > 18) e[`child_${i}_age`] = t("bad_age");
-      if (!c.sex) e[`child_${i}_sex`] = t("pick_one");
-      if (!c.coat) e[`child_${i}_coat`] = t("pick_one");
-      if (c.school === "other" && !c.school_other.trim()) e[`child_${i}_school_other`] = t("required");
-    });
-  }
-  if (name === "review") {
-    if (!state.consent_area) e.consent_area = t("required");
-    if (!state.consent_one) e.consent_one = t("required");
-    if (!state.consent_true) e.consent_true = t("required");
-  }
+  if (id === "review" && !state.consent_all) e.consent_all = t("required");
   return e;
 }
 
@@ -162,25 +166,25 @@ function select(key, label, options, opts = {}) {
 const yesno = () => [["yes", t("yes")], ["no", t("no")]];
 
 function renderStep() {
-  const name = STEPS[step];
-  const nav = (last) => `<div class="nav-row">
-    ${step > 0 ? `<button class="btn btn-ghost" data-action="back">${t("back")}</button>` : ""}
-    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? t("submit") : t("next")}</button></div>`;
-  const why = (k) => `<p class="why">${esc(t(k))}</p>`;
+  const id = cur;
+  const list = screens();
+  const last = id === "review";
+  const nav = `<div class="nav-row">
+    ${id !== "welcome" ? `<button class="btn btn-ghost" data-action="back">${t("back")}</button>` : ""}
+    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? t("review_send") : t("next")}</button></div>`;
+  const q = (text, hint) => `<h1 class="q-title">${esc(text)}</h1>${hint ? `<p class="why">${esc(hint)}</p>` : ""}`;
 
-  if (name === "welcome") {
+  if (id === "welcome") {
     const rem = loadRemembered();
-    return `<div class="step"><h1>${t("welcome_title")}</h1>
+    return `<div class="step welcome"><h1>${t("welcome_title")}</h1><p class="lead-short">${t("welcome_short")}</p>
       ${rem && !prefilled ? `<div class="card"><h2>${t("welcome_back_neutral")}</h2><p>${t("welcome_back_text")}</p>
         <button class="btn btn-primary btn-big" data-action="prefill">${t("start")}</button>
-        <p style="text-align:center;margin-top:8px"><button class="btn btn-ghost" data-action="fresh">${t("welcome_back_fresh")}</button></p></div>` : ""}
-      <p>${t("welcome_intro")}</p><p><strong>${t("welcome_time")}</strong></p>
-      <h2>${t("welcome_rules_title")}</h2><ul>${t("welcome_rules").map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
-      <div class="card"><h2>${t("phone_path_title")}</h2><p>${t("phone_path_text")}</p>
-        <p class="help-links"><a class="btn btn-help" href="sms:${config.help_phone}">💬 ${t("help")}</a><a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" target="_blank" rel="noopener">🟢 ${t("whatsapp")}</a><a class="btn btn-ghost" href="tel:${config.help_phone}">📞 ${t("call")}</a></p></div>
-      ${voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
-      ${assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
-        ${sttEnabled() ? `<button type="button" class="btn btn-big ${rec.state === "recording" ? "btn-secondary recording" : "btn-primary"}" data-action="record" ${rec.state === "transcribing" || freeform.busy ? "disabled" : ""}>
+        <p style="text-align:center;margin-top:8px"><button class="btn btn-ghost" data-action="fresh">${t("welcome_back_fresh")}</button></p></div>`
+      : `<button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>`}
+      <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
+      ${demoMode && voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
+      ${demoMode && assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
+        ${sttEnabled() ? `<button type="button" class="btn btn-big ${rec.state === "recording" ? "btn-secondary recording" : "btn-primary"}" data-action="record" ${rec.state !== "idle" || freeform.busy ? "disabled" : ""}>
           ${rec.state === "recording" ? "⏺ " + t("speak_stop") : rec.state === "transcribing" ? t("speak_transcribing") : "🎤 " + t("speak_start")}</button>
           ${rec.error ? `<p class="error">${esc(rec.error)}</p>` : ""}` : ""}
         <div class="field" style="margin-top:12px"><textarea id="freeform" rows="5" placeholder="${esc(t("freeform_placeholder"))}" ${freeform.busy ? "disabled" : ""}>${esc(freeform.text)}</textarea></div>
@@ -188,109 +192,83 @@ function renderStep() {
         ${freeform.short ? `<p class="why">${t("freeform_short")}</p>` : ""}
         ${freeform.missing ? `<p class="why">${t("freeform_done")}${freeform.missing.length ? ` <strong>${t("freeform_missing")}</strong> ${esc(freeform.missing.join(", "))}` : ""}</p>` : ""}
         <button type="button" class="btn btn-secondary btn-big" data-action="freeform" ${freeform.busy ? "disabled" : ""}>${freeform.busy ? t("freeform_working") : t("freeform_go")}</button></div>` : ""}
-      ${rem && !prefilled ? "" : `<button class="btn btn-primary btn-big" data-action="next">${t("start")}</button>`}</div>`;
+    </div>`;
   }
-  if (name === "you") {
-    return `<div class="step"><h1>${t("you_title")}</h1>
-      ${choice("helper", t("helper_q"), yesno(), { hint: t("helper_hint") })}
-      ${state.helper === "yes" ? `<div class="card">${field("helper_name", t("helper_name"))}${field("helper_phone", t("helper_phone"), { type: "tel", inputmode: "tel" })}${field("helper_org", t("helper_org"), { optional: true, hint: t("helper_org_hint") })}</div>` : ""}
-      ${why("you_why")}
-      ${field("first_name", t("first_name"), { autocomplete: "given-name" })}
-      ${field("last_name", t("last_name"), { autocomplete: "family-name" })}
-      ${field("phone", t("phone"), { type: "tel", inputmode: "tel", autocomplete: "tel", hint: t("phone_hint") })}
-      ${choice("can_text", t("can_text"), yesno())}
-      ${field("other_phone", t("other_phone"), { type: "tel", inputmode: "tel", optional: true })}
-      ${field("email", t("email"), { type: "email", inputmode: "email", autocomplete: "email", optional: true })}
-      ${field("other_adult", t("other_adult"), { optional: true, hint: t("other_adult_hint") })}
-      ${choice("contact_lang", t("contact_lang"), [["en", "English"], ["es", "Español"]])}
-      ${nav(false)}</div>`;
-  }
-  if (name === "home") {
+  if (id === "helper") return `<div class="step">${q(t("helper_q"), t("helper_hint"))}${choice("helper", "", yesno())}${nav}</div>`;
+  if (id === "helper_info") return `<div class="step">${q(t("helper_name"))}${field("helper_name", t("helper_name"))}${field("helper_phone", t("helper_phone"), { type: "tel", inputmode: "tel" })}${field("helper_org", t("helper_org"), { optional: true, hint: t("helper_org_hint") })}${nav}</div>`;
+  if (id === "name") return `<div class="step">${q(t("q_name"))}${field("first_name", t("first_name"), { autocomplete: "given-name" })}${field("last_name", t("last_name"), { autocomplete: "family-name" })}${nav}</div>`;
+  if (id === "phone") return `<div class="step">${q(t("q_phone"), t("you_why"))}${field("phone", t("phone"), { type: "tel", inputmode: "tel", autocomplete: "tel", hint: t("phone_hint") })}${choice("can_text", t("can_text"), yesno())}${nav}</div>`;
+  if (id === "street") return `<div class="step">${q(t("q_street"))}${field("street", t("street"), { autocomplete: "street-address", hint: t("street_hint") })}${field("unit", t("unit"), { optional: true })}${nav}</div>`;
+  if (id === "cityzip") {
     const cities = config.service_area.cities.map((c) => [c, c]).concat([["other", t("city_other")]]);
-    return `<div class="step"><h1>${t("home_title")}</h1>${why("home_why")}
-      ${field("street", t("street"), { autocomplete: "street-address", hint: t("street_hint") })}
-      ${field("unit", t("unit"), { optional: true })}
-      ${choice("city", t("city"), cities)}
-      ${state.city === "other" ? field("city_other", t("city_other")) : ""}
+    return `<div class="step">${q(t("q_cityzip"), t("cityzip_note"))}${choice("city", "", cities)}${state.city === "other" ? field("city_other", t("city_other")) : ""}
       ${field("zip", t("zip"), { inputmode: "numeric", autocomplete: "postal-code", maxlength: 5 })}
-      <p class="why" id="out-of-area" ${state.zip && digits(state.zip).length === 5 && !inArea() ? "" : "hidden"}>${esc(t("out_of_area"))}</p>
-      ${choice("mail_same", t("mail_same"), yesno(), { hint: t("mail_why") })}
-      ${state.mail_same === "no" ? field("mail_street", t("mail_street")) + field("mail_city", t("mail_city"), { optional: true }) + field("mail_zip", t("mail_zip"), { inputmode: "numeric", maxlength: 5, optional: true }) : ""}
-      ${nav(false)}</div>`;
+      <p class="why" id="out-of-area" ${state.zip && digits(state.zip).length === 5 && !inArea() ? "" : "hidden"}>${esc(t("out_of_area"))}</p>${nav}</div>`;
   }
-  if (name === "household") {
-    return `<div class="step"><h1>${t("household_title")}</h1>
-      ${choice("adults", t("adults"), [1, 2, 3, 4, 5, 6].map((n) => [n, String(n)]))}
-      ${choice("adult_coats", t("adult_coats"), yesno())}
-      ${state.adult_coats === "yes" ? `<fieldset class="field"><legend>${t("adult_coat_sizes")}</legend><div class="hint">${t("adult_coat_hint")}</div>
-        <div class="choices">${state.adult_coat_sizes.map((s, i) => `<label><input type="checkbox" checked data-action="rm-size" data-i="${i}"> ${esc(s)}</label>`).join("")}</div>
-        <div class="choices" style="margin-top:8px">${ADULT_SIZES.map((s) => `<button type="button" class="btn btn-ghost" data-action="add-size" data-size="${s}">+ ${s}</button>`).join("")}</div></fieldset>` : ""}
-      ${nav(false)}</div>`;
-  }
-  if (name === "children") {
-    const schools = config.schools.map((s) => [s.id, s[lang] || s.en]);
-    const cards = state.children.map((c, i) => `<div class="child-card"><h3>${t("child_n", i + 1)}</h3>
-      <button type="button" class="remove" data-action="rm-child" data-i="${i}">${t("remove")}</button>
+  if (id === "mail") return `<div class="step">${q(t("mail_same"), t("mail_why"))}${choice("mail_same", "", yesno())}${nav}</div>`;
+  if (id === "mail_addr") return `<div class="step">${q(t("q_mail_addr"))}${field("mail_street", t("mail_street"))}${field("mail_city", t("mail_city"), { optional: true })}${field("mail_zip", t("mail_zip"), { inputmode: "numeric", maxlength: 5, optional: true })}${nav}</div>`;
+  if (id === "adults") return `<div class="step">${q(t("adults"))}${choice("adults", "", [1, 2, 3, 4, 5, 6].map((n) => [n, String(n)]))}${nav}</div>`;
+  if (id === "adult_coats") return `<div class="step">${q(t("adult_coats"))}${choice("adult_coats", "", yesno())}
+      ${state.adult_coats === "yes" ? `<fieldset class="field ${errors.adult_coat_sizes ? "invalid" : ""}"><legend>${t("adult_coat_sizes")}</legend><div class="hint">${t("adult_coat_hint")}</div>
+        <div class="choices">${state.adult_coat_sizes.map((sz, i) => `<label><input type="checkbox" checked data-action="rm-size" data-i="${i}"> ${esc(sz)}</label>`).join("")}</div>
+        <div class="choices" style="margin-top:8px">${ADULT_SIZES.map((sz) => `<button type="button" class="btn btn-ghost" data-action="add-size" data-size="${sz}">+ ${sz}</button>`).join("")}</div>
+        ${errors.adult_coat_sizes ? `<div class="msg" role="alert">${esc(errors.adult_coat_sizes)}</div>` : ""}</fieldset>` : ""}${nav}</div>`;
+  if (id === "has_children") return `<div class="step">${q(t("q_has_children"), t("children_why"))}${choice("has_children", "", yesno())}${nav}</div>`;
+  const m = id.match(/^child:(\d+):(a|b|more)$/);
+  if (m) {
+    const i = +m[1]; const c = state.children[i] || blankChild();
+    if (m[2] === "a") return `<div class="step">${q(t("q_child_a", i + 1))}
       ${field(`child_${i}_first_name`, t("child_first"), { value: c.first_name, autocomplete: "off" })}
       ${field(`child_${i}_age`, t("child_age"), { value: c.age, type: "number", inputmode: "numeric", hint: t("child_age_hint") })}
+      ${i > 0 || state.children.length > 1 ? `<p><button type="button" class="btn btn-ghost" data-action="rm-child" data-i="${i}">${t("remove")}</button></p>` : ""}${nav}</div>`;
+    if (m[2] === "b") return `<div class="step">${q(t("q_child_b", i + 1) + ": " + (c.first_name || ""))}
       ${choice(`child_${i}_sex`, t("child_sex"), [["boy", t("boy")], ["girl", t("girl")]], { value: c.sex })}
-      ${select(`child_${i}_school`, t("child_school"), schools, { value: c.school, optional: true })}
-      ${c.school === "other" ? field(`child_${i}_school_other`, t("child_school_other"), { value: c.school_other }) : ""}
       ${choice(`child_${i}_coat`, t("child_coat"), yesno(), { value: c.coat })}
-      ${c.coat === "yes" ? select(`child_${i}_coat_size`, t("child_coat_size"), CHILD_SIZES.map((s) => [s, s]), { value: c.coat_size, optional: true }) : ""}
-    </div>`).join("");
-    return `<div class="step"><h1>${t("children_title")}</h1>${why("children_why")}
-      ${cards}
-      ${errors.children ? `<div class="msg" role="alert">${esc(errors.children)}</div>` : ""}
-      <button type="button" class="btn btn-secondary btn-big" data-action="add-child">+ ${t("add_child")}</button>
-      <div class="field" style="margin-top:14px"><div class="choices"><label><input type="checkbox" name="no_children" ${state.no_children ? "checked" : ""}> ${t("no_children")}</label></div>
-        ${state.no_children ? `<div class="hint">${t("no_children_note")}</div>` : ""}</div>
-      ${nav(false)}</div>`;
+      ${c.coat === "yes" ? select(`child_${i}_coat_size`, t("child_coat_size"), CHILD_SIZES.map((sz) => [sz, sz]), { value: c.coat_size, optional: true }) : ""}${nav}</div>`;
+    return `<div class="step">${q(t("q_child_more"))}${choice(`child_${i}_more`, "", yesno(), { value: c.more })}${nav}</div>`;
   }
-  if (name === "programs") {
-    const cb = (k, l, dis) => `<label><input type="checkbox" name="${k}" ${state[k] ? "checked" : ""} ${dis ? "disabled" : ""}> ${esc(l)}</label>`;
-    return `<div class="step"><h1>${t("programs_title")}</h1>
-      <div class="field"><div class="choices stack">${cb("want_food", t("want_food"))}${cb("want_toys", t("want_toys"), state.children.length === 0)}${cb("want_coats", t("want_coats"))}</div></div>
-      ${field("referral", t("referral"), { optional: true, hint: t("referral_hint") })}
-      ${field("notes", t("notes"), { type: "textarea", optional: true, hint: t("notes_hint") })}
-      ${nav(false)}</div>`;
+  if (id === "referral") {
+    const opts = [["school", t("referral_school")], ["church", t("referral_church")], ["frc", t("referral_frc")], ["friend", t("referral_friend")], ["other", t("referral_other")], ["skip", t("referral_skip")]];
+    return `<div class="step">${q(t("q_referral"))}${choice("referral_choice", "", opts, { stack: true })}${state.referral_choice === "other" ? field("referral", t("referral_other"), { optional: true }) : ""}${nav}</div>`;
   }
-  if (name === "review") {
+  if (id === "review") {
     const cityName = state.city === "other" ? state.city_other : state.city;
     const addr = `${state.street}${state.unit ? " " + state.unit : ""}, ${cityName} ${state.zip}`;
-    const mail = state.mail_same === "yes" ? addr : `${state.mail_street}, ${state.mail_city} ${state.mail_zip}`;
-    const kids = state.children.map((c) => `${c.first_name}, ${c.age}, ${c.sex === "boy" ? t("boy") : c.sex === "girl" ? t("girl") : "?"}${c.coat === "yes" ? ", 🧥" : ""}`).join("<br>") || t("no_children");
-    const progs = [state.want_food && t("want_food"), state.want_toys && t("want_toys"), state.want_coats && t("want_coats")].filter(Boolean).join(", ");
-    const row = (label, val, s) => `<dt>${esc(label)} <a href="#" class="edit" data-action="goto" data-step="${s}">${t("edit")}</a></dt><dd>${val}</dd>`;
-    const cbox = (k, l) => `<label class="${errors[k] ? "error" : ""}"><input type="checkbox" name="${k}" ${state[k] ? "checked" : ""}> ${esc(l)}</label>`;
-    return `<div class="step summary"><h1>${t("review_title")}</h1><p>${t("review_text")}</p><dl>
-      ${row(t("labels").name, esc(`${state.first_name} ${state.last_name}`), 1)}
-      ${row(t("labels").phone, esc(state.phone), 1)}
-      ${row(t("labels").address, esc(addr), 2)}
-      ${row(t("labels").mailing, esc(mail), 2)}
-      ${row(t("labels").adults, esc(`${state.adults}${state.adult_coat_sizes.length ? " · 🧥 " + state.adult_coat_sizes.join(", ") : ""}`), 3)}
-      ${row(t("labels").children, kids, 4)}
-      ${row(t("labels").programs, esc(progs), 5)}</dl>
-      <div class="field"><div class="choices stack">${cbox("consent_area", t("consent_area"))}${cbox("consent_one", t("consent_one"))}${cbox("consent_true", t("consent_true"))}</div>
-      ${errors.consent_area || errors.consent_one || errors.consent_true ? `<div class="msg" role="alert">${t("required")}</div>` : ""}</div>
-      ${state.helper === "yes" ? `<p class="hint">${t("remember_helper")}</p>` : `<div class="field"><div class="choices stack"><label><input type="checkbox" name="remember" ${state.remember ? "checked" : ""}> ${t("remember")}</label></div><div class="hint">${t("remember_hint")}</div></div>`}
-      <p class="why">🔒 ${t("review_privacy")}</p>
-      ${nav(true)}</div>`;
+    const mail = state.mail_same === "yes" ? addr : [state.mail_street, state.mail_city, state.mail_zip].filter(Boolean).join(", ");
+    const kids = state.has_children === "yes" ? state.children.map((c) => `${c.first_name}, ${c.age}, ${c.sex === "boy" ? t("boy") : c.sex === "girl" ? t("girl") : "?"}${c.coat === "yes" ? ", 🧥" : ""}`).join("<br>") : t("no_children");
+    const row = (label, val, sid) => `<dt>${esc(label)} <a href="#" class="edit" data-action="goto" data-screen="${sid}">${t("edit")}</a></dt><dd>${val}</dd>`;
+    return `<div class="step summary"><h1 class="q-title">${t("review_title")}</h1><dl>
+      ${row(t("labels").name, esc(`${state.first_name} ${state.last_name}`), "name")}
+      ${row(t("labels").phone, esc(state.phone), "phone")}
+      ${row(t("labels").address, esc(addr), "street")}
+      ${state.mail_same === "no" ? row(t("labels").mailing, esc(mail), "mail_addr") : ""}
+      ${row(t("labels").adults, esc(`${state.adults}${state.adult_coat_sizes.length ? " · 🧥 " + state.adult_coat_sizes.join(", ") : ""}`), "adults")}
+      ${row(t("labels").children, kids, "has_children")}</dl>
+      <div class="field ${errors.consent_all ? "invalid" : ""}"><div class="choices stack"><label><input type="checkbox" name="consent_all" ${state.consent_all ? "checked" : ""}> ${esc(t("confirm_all"))}</label></div>
+      ${errors.consent_all ? `<div class="msg" role="alert">${t("required")}</div>` : ""}</div>
+      ${state.helper === "yes" ? `<p class="hint">${t("remember_helper")}</p>` : `<div class="field"><div class="choices stack"><label><input type="checkbox" name="remember" ${state.remember ? "checked" : ""}> ${t("remember")}</label></div></div>`}
+      ${nav}</div>`;
   }
+  return `<div class="step"><p class="error">?</p></div>`;
 }
 
 function render() {
   if (speaking || player || (voiceAudio && !voiceAudio.paused)) stopSpeaking();
-  const total = STEPS.length - 1; // welcome is step 0, not counted
-  const pct = Math.round((step / total) * 100);
+  const list = screens(); const total = list.length - 1; // welcome not counted
+  const idx = stepIndex(); const pct = Math.round((idx / total) * 100);
   const canSpeak = ("speechSynthesis" in window) || Object.keys(audioManifest.files).length > 0;
   const hb = (icon, label) => `<span class="ico" aria-hidden="true">${icon}</span><span>${label}</span>`;
-  const helpBar = `<div class="help-bar">
+  const helpBar = `<div class="help-bar two">
     ${canSpeak ? `<button type="button" class="btn btn-ghost" data-action="speak" aria-pressed="${speaking}">${speaking ? hb("⏹", t("stop_reading")) : hb("🔊", t("read_aloud"))}</button>` : ""}
-    ${assistEnabled() ? `<button type="button" class="btn btn-help" data-action="assist-toggle" aria-expanded="${assist.open}">${hb("❓", t("assist_title"))}</button>` : ""}
-    <a class="btn btn-help" href="sms:${config.help_phone}">${hb("💬", t("help"))}</a>
-    <a class="btn btn-help" href="https://wa.me/${config.help_phone.replace(/\D/g, "")}" target="_blank" rel="noopener">${hb("🟢", t("whatsapp"))}</a>
-    <a class="btn btn-ghost" href="tel:${config.help_phone}">${hb("📞", t("call"))}</a></div>`;
+    <button type="button" class="btn btn-help" data-action="help-open" aria-expanded="${helpOpen}">${hb("🆘", t("help_btn"))}</button></div>`;
+  const wa = config.help_phone.replace(/\D/g, "");
+  const helpSheet = helpOpen ? `<div class="help-sheet" role="dialog" aria-modal="true" aria-label="${esc(t("help_btn"))}"><div class="help-sheet-inner">
+    <p class="q-title">${t("help_sheet_title")}</p>
+    <a class="btn btn-primary big" href="tel:${config.help_phone}">📞 ${t("help_call")}</a>
+    <a class="btn btn-primary big" href="sms:${config.help_phone}">💬 ${t("help_text_msg")}</a>
+    <a class="btn btn-primary big" href="https://wa.me/${wa}" target="_blank" rel="noopener">🟢 ${t("help_whatsapp")}</a>
+    ${assistEnabled() ? `<button type="button" class="btn btn-ghost big" data-action="assist-toggle">❓ ${t("help_ask")}</button>` : ""}
+    <button type="button" class="btn btn-ghost big" data-action="help-close">✖ ${t("help_close")}</button></div></div>` : "";
   const top = `<div class="apply-top"><a class="brand" href="${base}/${lang}/" aria-label="Truckee Community Cares"><img src="${base}/static/img/logo.png" alt="Truckee Community Cares" height="40"></a>
     <div class="lang-toggle" role="group" aria-label="Language"><button type="button" data-action="lang" data-lang="en" aria-pressed="${lang === "en"}"><span>English</span></button><button type="button" data-action="lang" data-lang="es" aria-pressed="${lang === "es"}"><span>Español</span></button></div></div>`;
   let body;
@@ -306,7 +284,7 @@ function render() {
       : `<div class="closed"><h1>${gate.reason === "not_open" ? t("not_open_title") : t("closed_title")}</h1>
       <p>${gate.reason === "not_open" ? esc(t("not_open_text", fmtDate(localToUtc(config.opens, config.timezone)))) : t("closed_text")}</p></div>`;
   } else {
-    body = (step > 0 ? `<div class="progress"><div class="bar"><div style="width:${pct}%"></div></div><div class="label">${t("step_of", step, total)}</div></div>` : "") + renderStep();
+    body = (idx > 0 ? `<div class="progress"><div class="bar"><div style="width:${pct}%"></div></div><div class="label">${t("step_of", idx, total)}</div></div>` : "") + renderStep();
     if (sendError) body += sendErrorCard();
   }
   const panel = assist.open ? `<section class="card assist" aria-label="${esc(t("assist_heading"))}"><h2>${t("assist_heading")} <button type="button" class="btn btn-ghost small" data-action="assist-toggle" style="float:right">${t("assist_close")}</button></h2>
@@ -315,7 +293,7 @@ function render() {
     <form data-action="assist-ask" class="assist-form"><input id="assist-q" type="text" placeholder="${esc(t("assist_placeholder"))}" maxlength="500" autocomplete="off" ${assist.busy ? "disabled" : ""}><button class="btn btn-primary" ${assist.busy ? "disabled" : ""}>${t("assist_send")}</button></form></section>` : "";
   const banner = previewMode ? `<div class="announcement" role="status">${lang === "es" ? "MODO DE PRUEBA. Esta solicitud no cuenta. Las solicitudes reales abren el " : "PREVIEW MODE. This application does not count. Real applications open "}${esc(fmtDate(localToUtc(config.opens, config.timezone)))}.</div>` : "";
   const y = window.scrollY;
-  root.innerHTML = top + banner + body + panel + helpBar;
+  root.innerHTML = top + banner + body + panel + helpBar + helpSheet;
   fitLabels();
   if (scrollTop) window.scrollTo(0, 0); else window.scrollTo(0, y);
   scrollTop = true;
@@ -357,6 +335,22 @@ let fitTimer;
 window.addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fitLabels, 100); });
 
 // ---------- state updates ----------
+// Side effects of a decision, applied when the person taps Next on that screen.
+function afterAnswer(id) {
+  if (id === "has_children") {
+    if (state.has_children === "yes") { state.no_children = false; if (!state.children.length) state.children.push(blankChild()); }
+    else { state.no_children = true; state.children = []; }
+  }
+  const m = id.match(/^child:(\d+):more$/);
+  if (m) {
+    const i = +m[1];
+    if (state.children[i].more === "yes") { if (!state.children[i + 1]) state.children.push(blankChild()); }
+    else state.children.splice(i + 1);
+  }
+  if (id === "adult_coats" && state.adult_coats === "no") state.adult_coat_sizes = [];
+  if (id === "mail" && state.mail_same === "yes") { state.mail_street = ""; state.mail_city = ""; state.mail_zip = ""; }
+  if (id === "referral") state.referral = state.referral_choice === "other" ? state.referral : (state.referral_choice === "skip" ? "" : state.referral_choice);
+}
 function readInputs() {
   root.querySelectorAll("input, select, textarea").forEach((el) => {
     const n = el.name; if (!n) return;
@@ -366,11 +360,10 @@ function readInputs() {
     else if (el.type === "radio") { if (el.checked) state[n] = el.value; }
     else state[n] = el.value;
   });
-  if (state.children.length === 0) state.want_toys = false; else if (state.want_toys === false && state.children.length) state.want_toys = true;
   saveDraft();
 }
 
-let view = "form"; let doneId = ""; let sendError = false; let sending = false; let speaking = false;
+let view = "form"; let doneId = ""; let sendError = false; let sending = false; let speaking = false; let helpOpen = false;
 let assist = { open: false, history: [], busy: false, error: false };
 let audioManifest = { files: {} };   // site/static/audio/manifest.json, pre-rendered screens
 let player = null;                    // the one <audio> element in use
@@ -417,7 +410,8 @@ function synthSpeak(text, onend) {
 function currentScreenKey() {
   if (view === "done") return "done";
   if (!gate.open) return gate.reason === "not_open" ? "not_open" : "closed";
-  return STEPS[step];
+  const m = cur.match(/^child:\d+:(a|b|more)$/);
+  return m ? `child_${m[1]}` : cur;
 }
 function speakPage() {
   if (speaking) { stopSpeaking(); return; }
@@ -458,7 +452,9 @@ root.addEventListener("click", async (ev) => {
   if (el.tagName === "A") ev.preventDefault();
   if (a === "speak") { speakPage(); return; }
   if (a === "speak-text") { speakText(assist.history[+el.dataset.i]?.content || ""); return; }
-  if (a === "assist-toggle") { readInputs(); assist.open = !assist.open; render(); if (assist.open) root.querySelector("#assist-q")?.focus(); return; }
+  if (a === "assist-toggle") { readInputs(); helpOpen = false; assist.open = !assist.open; render(); if (assist.open) root.querySelector("#assist-q")?.focus(); return; }
+  if (a === "help-open") { readInputs(); helpOpen = true; scrollTop = false; render(); return; }
+  if (a === "help-close") { helpOpen = false; scrollTop = false; render(); return; }
   if (a === "freeform") { const ta = root.querySelector("#freeform"); freeform.text = ta ? ta.value : ""; await runFreeform(); return; }
   if (a === "record") { rec.prompt = ""; await toggleRecording(); return; }
   if (a === "voice-start") { readInputs(); startVoice(); return; }
@@ -469,29 +465,32 @@ root.addEventListener("click", async (ev) => {
   if (a === "voice-again") { voiceRepeat(); return; }
   if (a === "voice-skip") { voiceNext(true); return; }
   if (a === "voice-review") { leaveVoice(); return; }
-  if (a === "voice-send") { state.consent_area = state.consent_one = state.consent_true = true; state.remember = false; await submit(); return; }
+  if (a === "voice-send") { state.consent_all = true; state.remember = false; await submit(); return; }
   if (a === "reload") { location.reload(); return; }
   if (a === "lang") { readInputs(); setLang(el.dataset.lang); return; }
   readInputs();
-  if (a === "next") { errors = validate(STEPS[step]); if (Object.keys(errors).length) return render(); step = Math.min(step + 1, STEPS.length - 1); }
-  if (a === "back") { errors = {}; step = Math.max(step - 1, 0); }
-  if (a === "goto") { errors = {}; step = +el.dataset.step; }
-  if (a === "add-child") { state.children.push(blankChild()); state.no_children = false; }
-  if (a === "rm-child") { state.children.splice(+el.dataset.i, 1); }
+  if (a === "next") {
+    errors = validate(cur); if (Object.keys(errors).length) return render();
+    afterAnswer(cur);
+    const list = screens(); cur = list[Math.min(list.indexOf(cur) + 1, list.length - 1)];
+  }
+  if (a === "back") { errors = {}; const list = screens(); cur = list[Math.max(list.indexOf(cur) - 1, 0)]; }
+  if (a === "goto") { errors = {}; cur = screens().includes(el.dataset.screen) ? el.dataset.screen : "review"; }
+  if (a === "rm-child") { const i = +el.dataset.i; state.children.splice(i, 1); if (!state.children.length) { state.has_children = ""; cur = "has_children"; } else { const j = Math.min(i, state.children.length - 1); state.children[j].more = j === state.children.length - 1 ? "no" : "yes"; cur = `child:${j}:a`; } }
   if (a === "add-size") { state.adult_coat_sizes.push(el.dataset.size); }
   if (a === "rm-size") { state.adult_coat_sizes.splice(+el.dataset.i, 1); }
   if (a === "prefill") {
     const rem = loadRemembered();
     if (rem) {
-      state = { ...blankState(), ...rem.state, consent_area: false, consent_one: false, consent_true: false, remember: true };
+      state = { ...blankState(), ...rem.state, consent_all: false, remember: true };
       // Children are a year older per season since the answers were saved.
       const years = Math.max(0, Math.round((Date.now() - Date.parse(rem.saved || 0)) / (365.25 * 24 * 3600 * 1000)));
       if (years) state.children = state.children.map((c) => ({ ...c, age: c.age === "" ? "" : String(Number(c.age) + years), coat_size: "" }));
     }
-    prefilled = true; step = 1;
+    prefilled = true; cur = "helper";
   }
-  if (a === "fresh") { try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} prefilled = true; step = 1; }
-  if (a === "again") { state = blankState(); step = 0; view = "form"; doneId = ""; prefilled = true; try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} }
+  if (a === "fresh") { try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} prefilled = true; cur = "helper"; }
+  if (a === "again") { state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
   errors = {}; saveDraft(); render();
 });
@@ -682,7 +681,8 @@ function applyExtracted(f, { replaceChildren = true } = {}) {
     const kids = f.children
       .map((c) => ({ ...blankChild(), first_name: (c.first_name || "").trim(), age: (c.age === null || c.age === undefined || c.age === "") ? "" : String(c.age), sex: c.sex || "", coat: c.coat ? "yes" : "no" }))
       .filter((c) => c.first_name || c.age !== "");
-    state.children = replaceChildren ? kids : state.children.concat(kids); state.no_children = false; state.want_toys = true;
+    state.children = replaceChildren ? kids : state.children.concat(kids); state.no_children = false; state.has_children = "yes";
+    state.children.forEach((c, i) => { c.more = i < state.children.length - 1 ? "yes" : "no"; });
   }
   if (f.want_food) state.want_food = true; if (f.want_coats) state.want_coats = true;
 }
@@ -701,7 +701,7 @@ async function runFreeform() {
     const { fields: f, missing } = await extractText(freeform.text);
     if (!f) throw new Error("no fields");
     applyExtracted(f);
-    freeform.missing = missing || []; prefilled = true; step = 1; saveDraft();
+    freeform.missing = missing || []; prefilled = true; cur = "helper"; saveDraft();
   } catch (e) { console.error(e); freeform.error = true; }
   freeform.busy = false; render();
 }
@@ -711,7 +711,7 @@ root.addEventListener("change", (ev) => {
   // completes, and render() keeps the scroll position, so nothing jumps.
   const n = ev.target.name || "";
   if (n === "helper" && ev.target.value === "yes" && ev.target.checked) state.remember = false;
-  if (["helper", "city", "mail_same", "adult_coats", "no_children"].includes(n) || /^child_\d+_(school|coat)$/.test(n)) { readInputs(); scrollTop = false; render(); }
+  if (["city", "adult_coats", "referral_choice"].includes(n) || /^child_\d+_coat$/.test(n)) { readInputs(); scrollTop = false; render(); }
 });
 root.addEventListener("input", (ev) => {
   if ((ev.target.name || "") !== "zip") return;
@@ -732,16 +732,16 @@ function payload() {
     address: { street: state.street.trim(), unit: state.unit.trim(), city: cityName, zip: digits(state.zip), in_area: inArea() },
     mailing: state.mail_same === "yes" ? null : { street: state.mail_street.trim(), city: state.mail_city.trim(), zip: digits(state.mail_zip) },
     household: { adults: Number(state.adults), adult_coat_sizes: state.adult_coat_sizes },
-    children: state.children.map((c) => ({ first_name: c.first_name.trim(), age: Number(c.age), sex: c.sex,
+    children: (state.has_children === "yes" ? state.children : []).map((c) => ({ first_name: c.first_name.trim(), age: Number(c.age), sex: c.sex,
       school: c.school === "other" ? c.school_other.trim() : c.school, coat: c.coat === "yes", coat_size: c.coat_size })),
-    programs: { food: !!state.want_food, toys: !!state.want_toys, coats: !!state.want_coats },
-    referral: state.referral.trim(), notes: state.notes.trim(),
+    programs: { food: true, toys: state.has_children === "yes" && state.children.length > 0, coats: state.adult_coat_sizes.length > 0 || state.children.some((c) => c.coat === "yes") },
+    referral: (state.referral || "").trim(), notes: (state.notes || "").trim(),
   };
 }
 
 // Every path to a send goes through here, so this is the one place that checks the form.
 function firstInvalidStep() {
-  for (const name of STEPS.slice(1, -1)) if (Object.keys(validate(name)).length) return name;
+  for (const id of screens().slice(1)) if (Object.keys(validate(id)).length) return id;
   return null;
 }
 async function submit() {
@@ -750,7 +750,7 @@ async function submit() {
   if (bad) {
     // Something required is missing: land on that step with the field marked.
     stopSpeaking(); closeOverlay();
-    view = "form"; voice = null; step = STEPS.indexOf(bad); errors = validate(bad); render();
+    view = "form"; voice = null; cur = bad; errors = validate(bad); render();
     return;
   }
   if (!previewMode) {
@@ -775,7 +775,7 @@ async function submit() {
         setTimeout(() => {
           if (sendReason !== "busy") return;
           // Retry only if the person is still on the send screen and not typing; otherwise leave the manual button.
-          const onSendScreen = view === "voice" ? (voice && voice.phase === "summary") : STEPS[step] === "review";
+          const onSendScreen = view === "voice" ? (voice && voice.phase === "summary") : cur === "review";
           const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
           sendError = false; sendReason = "";
           if (onSendScreen && !typing) { readInputs(); submit(); } else { sendError = true; render(); }
@@ -788,7 +788,7 @@ async function submit() {
     doneId = data.id;
     const remember = state.remember && state.helper !== "yes" && view !== "voice";
     try {
-      if (remember) { const { consent_area, consent_one, consent_true, ...keep } = state; localStorage.setItem(REMEMBER_KEY, JSON.stringify({ saved: new Date().toISOString(), state: keep })); }
+      if (remember) { const { consent_all, ...keep } = state; localStorage.setItem(REMEMBER_KEY, JSON.stringify({ saved: new Date().toISOString(), state: keep })); }
       else localStorage.removeItem(REMEMBER_KEY);
     } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
@@ -833,11 +833,11 @@ const VOICE_QS = [
 const REQUIRED = [["first_name", (s) => s.first_name.trim()], ["last_name", (s) => s.last_name.trim()], ["phone", (s) => digits(s.phone).length === 10],
   ["street", (s) => s.street.trim()], ["city", (s) => s.city && (s.city !== "other" || s.city_other)], ["zip", (s) => digits(s.zip).length === 5],
   ["mail_street", (s) => s.mail_same !== "no" || s.mail_street.trim()],
-  ["adults", (s) => !!s.adults], ["children", (s) => s.children.length || s.no_children],
+  ["adults", (s) => !!s.adults], ["children", (s) => (s.has_children === "yes" && s.children.length) || s.has_children === "no"],
   ["children_ages", (s) => s.no_children || s.children.every((c) => c.age !== "" && c.first_name.trim())],
   ["children_sex", (s) => s.no_children || s.children.every((c) => c.sex === "boy" || c.sex === "girl")]];
 // Which form step owns a missing field, for the "check it on screen" landing.
-const FIELD_STEP = { first_name: "you", last_name: "you", phone: "you", street: "home", city: "home", zip: "home", mail_street: "home", adults: "household", children: "children", children_ages: "children", children_sex: "children" };
+const FIELD_STEP = { first_name: "name", last_name: "name", phone: "phone", street: "street", city: "cityzip", zip: "cityzip", mail_street: "mail_addr", adults: "adults", children: "has_children", children_ages: "child:0:a", children_sex: "child:0:b" };
 
 // Short answers that need no model call. Every word must be a negative word for "no";
 // an affirmative must start with a yes-word and carry no digits and no negation.
@@ -858,8 +858,9 @@ function leaveVoice() {
   if (voice && voice.helperDefaulted) state.helper = "";
   const miss = nextMissing();
   view = "form"; voice = null;
-  step = STEPS.indexOf(miss ? (FIELD_STEP[miss] || "you") : "review");
-  errors = (miss && answered) ? validate(STEPS[step]) : {};
+  const target = miss ? (FIELD_STEP[miss] || "name") : "review";
+  cur = screens().includes(target) ? target : "helper";
+  errors = (miss && answered) ? validate(cur) : {};
   render();
 }
 
@@ -903,6 +904,7 @@ function startVoice() {
   voice = { qi: -1, phase: "intro", transcript: "", readback: "", error: "", missingKey: null, tries: {} };
   // Voice mode does not ask the helper question; a voice applicant answers for their own family.
   if (!state.helper) { state.helper = "no"; voice.helperDefaulted = true; }
+  if (!state.referral_choice) state.referral_choice = "skip";
   if (!state.contact_lang) state.contact_lang = lang;
   render();
   voicePlay(`${base}/static/audio/${lang}/voice_intro.mp3`, () => {});
@@ -936,7 +938,7 @@ async function voiceTalk() {
       else if (id === "other" && isNo) { state.other_adult = ""; }
       else if (id === "notes" && isNo) { state.notes = ""; }
       else if (id === "notes") { state.notes = text.trim().slice(0, 500); }
-      else if ((id === "children" || id === "m_children") && isNo) { state.children = []; state.no_children = true; }
+      else if ((id === "children" || id === "m_children") && isNo) { state.children = []; state.no_children = true; state.has_children = "no"; }
       else {
         const { fields } = await extractText(text, q.text);
         // A fresh answer replaces what this question owns; other questions' answers stay.
@@ -960,7 +962,7 @@ async function voiceTalk() {
           if (negated && !fields?.mail_street) { state.mail_same = "no"; }
           else if (!negated && !fields?.mail_street) { state.mail_same = "yes"; }
         }
-        if ((id === "children" || id === "m_children") && !(fields && fields.children && fields.children.length) && negated) { state.children = []; state.no_children = true; }
+        if ((id === "children" || id === "m_children") && !(fields && fields.children && fields.children.length) && negated) { state.children = []; state.no_children = true; state.has_children = "no"; }
         if (id === "other" && fields?.other_adult) state.other_adult = fields.other_adult;
       }
       voice.readback = readbackFor(q); voice.phase = "confirm"; saveDraft(); render();
@@ -1044,7 +1046,7 @@ function renderVoice() {
 }
 
 // Debug hook for tests: read-only view of internal state.
-window.__tcc = { get rec() { return { state: rec.state, error: rec.error }; }, get voice() { return voice; }, get view() { return view; }, get state() { return state; } };
+window.__tcc = { get rec() { return { state: rec.state, error: rec.error }; }, get voice() { return voice; }, get view() { return view; }, get state() { return state; }, get cur() { return cur; }, get screens() { return screens(); } };
 
 // ---------- boot ----------
 function renderFallback(msg) {
@@ -1062,6 +1064,7 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   gate = computeGate();
   const params = new URLSearchParams(location.search);
   const previewParam = params.has("preview");
+  demoMode = params.has("voice");
   previewToken = previewParam ? (params.get("preview") || "") : "";
   let serverOpen = null;
   try {

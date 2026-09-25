@@ -5,20 +5,17 @@
   <div class="logo-big"><img src="{{ base }}/static/img/logo.png" alt="{{ s.org }}"></div>
   <h1>{{ page.title }}</h1>
   <p class="lead">{{ page.lead }}</p>
-  <div class="cta-row">
-    <div class="cta">
-      <a class="btn btn-primary btn-big" href="{{ base }}/{{ lang }}/apply/">{{ page.apply_cta }}</a>
-      <p class="muted">{{ page.apply_sub }}</p>
-    </div>
-    <div class="cta">
-      <a class="btn btn-secondary btn-big" href="{{ base }}/{{ lang }}/donate/">{{ page.donate_cta }}</a>
-      <p class="muted">{{ page.donate_sub }}</p>
-    </div>
-  </div>
+  <a class="btn btn-secondary btn-big btn-hero" href="{{ base }}/{{ lang }}/apply/">{{ page.apply_cta }}</a>
+  <p class="hero-sub">{{ page.apply_sub }}</p>
 </section>
-<div class="photo-strip" aria-hidden="true">
-  {% for p in photos %}<img src="{{ base }}/static/img/photos/{{ p.file }}" alt="" loading="lazy"{% if p.width %} width="{{ p.width }}" height="{{ p.height }}"{% endif %}>{% endfor %}
-</div>
+<section class="card help-card">
+  <p><strong>{{ page.help_title }}</strong></p>
+  <p class="help-links">
+    <a class="btn btn-primary" href="tel:{{ config.help_phone }}">📞 {{ page.help_call }}</a>
+    <a class="btn btn-primary" href="sms:{{ config.help_phone }}">💬 {{ page.help_text }}</a>
+    <a class="btn btn-primary" href="https://wa.me/{{ config.help_phone | replace('+', '') }}" target="_blank" rel="noopener">🟢 WhatsApp</a>
+  </p>
+</section>
 <section class="steps-grid">
   <h2 class="section">{{ page.how_title }}</h2>
   <ol>
@@ -27,16 +24,12 @@
     {% endfor %}
   </ol>
 </section>
-<section class="card">
-  <h2 class="section" style="margin-top:0">{{ page.privacy_title }}</h2>
-  <p>{{ page.privacy_text }}</p>
-</section>
-<section class="stats">
-  <h2 class="section">{{ page.stats_title }}</h2>
-  <ul>
-    {% for st in page.stats %}
-    <li><span class="n">{{ st.n }}</span><span>{{ st.label }}</span></li>
-    {% endfor %}
-  </ul>
+<div class="photo-strip" aria-hidden="true">
+  {% for ph in photos %}<img src="{{ base }}/static/img/photos/{{ ph.file }}" alt="" loading="lazy" width="{{ ph.width }}" height="{{ ph.height }}">{% endfor %}
+</div>
+<section class="card donate-card">
+  <h2 class="section" style="margin-top:0">{{ page.donate_title }}</h2>
+  <p>{{ page.donate_sub }}</p>
+  <a class="btn btn-ghost btn-big" href="{{ base }}/{{ lang }}/donate/">{{ page.donate_cta }}</a>
 </section>
 {% endblock %}

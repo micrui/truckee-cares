@@ -54,13 +54,20 @@ nav .nav-apply { background: var(--brand-dark); color: #fff; font-weight: 700; }
 .hero .logo-big { background: rgba(255, 255, 255, 0.92); display: inline-block; padding: 14px 22px; border-radius: 14px; margin-bottom: 14px; }
 .hero .logo-big img { width: min(360px, 80vw); height: auto; display: block; }
 .hero h1 { color: #fff; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.5); }
-.hero .lead { font-size: 1.15rem; color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); max-width: 620px; margin: 0 auto 8px; }
+.hero .lead { font-size: 1.15rem; color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); max-width: 620px; margin: 0 auto 14px; }
+.hero .btn-hero { max-width: 420px; margin: 0 auto; font-size: 1.35rem; min-height: 68px; }
+.hero .hero-sub { color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); margin: 10px 0 0; }
+.help-card { text-align: center; }
+.help-card .help-links { justify-content: center; }
+.help-card .btn { min-width: 110px; }
+.donate-card { text-align: center; }
+.donate-card .btn { max-width: 320px; margin: 0 auto; }
 .hero .cta p { color: #fff; text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); }
 .hero .btn-secondary { background: var(--accent); color: var(--accent-text); }
 @media (min-width: 720px) { .hero { margin: 0; border-radius: 16px; overflow: hidden; } }
 h2.section { text-transform: uppercase; letter-spacing: 0.14em; font-size: 1.05rem; color: var(--brand-dark); text-align: center; margin-top: 1.8em; }
 .photo-strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 12px 0 4px; }
-.photo-strip img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; display: block; }
+.photo-strip img { width: 100%; height: auto; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; display: block; }
 @media (max-width: 560px) { .photo-strip { grid-template-columns: repeat(2, 1fr); } }
 .cta-row { display: grid; gap: 16px; margin: 16px 0; }
 @media (min-width: 560px) { .cta-row { grid-template-columns: 1fr 1fr; } }
@@ -170,3 +177,14 @@ legend { font-weight: 700; margin-bottom: 6px; padding: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 body.rec-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) { .rec-spinner { animation: none; border-top-color: var(--line); } }
+
+/* ---------- One-decision screens, help sheet ---------- */
+.q-title { font-size: 1.5rem; line-height: 1.25; margin: 6px 0 14px; }
+.welcome .lead-short { font-size: 1.15rem; margin: 0 0 18px; }
+.welcome .btn-hero { font-size: 1.35rem; min-height: 72px; }
+.help-bar.two .btn { font-size: 0.95rem; flex-direction: row; gap: 6px; min-height: 56px; }
+.help-bar.two .btn-help { flex: 1.4; font-weight: 800; }
+.help-sheet { position: fixed; inset: 0; z-index: 90; background: rgba(0, 0, 0, 0.45); display: flex; align-items: flex-end; justify-content: center; }
+.help-sheet-inner { background: var(--bg); width: 100%; max-width: 560px; border-radius: 18px 18px 0 0; padding: 18px 16px 24px; display: grid; gap: 10px; }
+.help-sheet .big { min-height: 64px; font-size: 1.15rem; width: 100%; }
+.help-sheet .q-title { text-align: center; margin: 0 0 6px; font-size: 1.2rem; }

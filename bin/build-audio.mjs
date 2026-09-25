@@ -35,15 +35,26 @@ export function narration(lang, mode = "pickup") {
   const s = new Proxy(raw, { get: (o, k) => (mode !== "pickup" && o[`${k}_${mode}`] !== undefined) ? o[`${k}_${mode}`] : o[k] });
   const opt = ` ${s.optional}`;
   return {
-    welcome: [s.welcome_title, s.welcome_intro, s.welcome_time, s.welcome_rules_title, ...s.welcome_rules, s.phone_path_title, s.phone_path_text, s.freeform_title, s.freeform_text],
-    you: [s.you_title, s.helper_q, s.helper_hint, s.you_why, s.first_name, s.last_name, s.phone, s.phone_hint, s.can_text, s.other_phone + opt, s.email + opt, s.other_adult + opt, s.other_adult_hint, s.contact_lang],
-    home: [s.home_title, s.home_why, s.street, s.street_hint, s.unit + opt, s.city, s.zip, s.mail_same, s.mail_why],
-    household: [s.household_title, s.adults, s.adult_coats, s.adult_coat_hint],
-    children: [s.children_title, s.children_why, s.child_first, s.child_age, s.child_age_hint, s.child_sex, s.child_school + opt, s.child_coat, s.add_child, s.no_children, s.no_children_note],
-    programs: [s.programs_title, s.want_food, s.want_toys, s.want_coats, s.referral + opt, s.referral_hint, s.notes + opt],
-    review: [s.review_title, s.review_text, s.consent_area, s.consent_one, s.consent_true, s.remember, s.remember_hint, s.review_privacy],
+    welcome: [s.welcome_title, s.welcome_short, s.help_sheet_title],
+    helper: [s.helper_q, s.helper_hint],
+    helper_info: [s.helper_name, s.helper_phone, s.helper_org + opt],
+    name: [s.q_name, s.first_name, s.last_name],
+    phone: [s.q_phone, s.you_why, s.phone_hint, s.can_text],
+    street: [s.q_street, s.street_hint, s.unit + opt],
+    cityzip: [s.q_cityzip, s.cityzip_note, s.home_why, s.zip],
+    mail: [s.mail_same, s.mail_why],
+    mail_addr: [s.q_mail_addr, s.mail_street],
+    adults: [s.adults],
+    adult_coats: [s.adult_coats, s.adult_coat_hint],
+    has_children: [s.q_has_children, s.children_why],
+    child_a: [s.child_first, s.child_age, s.child_age_hint],
+    child_b: [s.child_sex, s.child_coat],
+    child_more: [s.q_child_more],
+    referral: [s.q_referral, s.referral_hint],
+    review: [s.review_title, s.review_text, s.confirm_all, s.review_privacy],
     done: [s.done_title, s.done_code, s.done_text, s.done_limited],
     not_open: [s.not_open_title, s.not_open_text(opensDate(lang))],
+    closed: [s.closed_title, s.closed_text],
     voice_intro: [s.voice_intro],
     voice_q_who: [s.voice_q_who], voice_q_home: [s.voice_q_home], voice_q_mail: [s.voice_q_mail], voice_q_adults: [s.voice_q_adults],
     voice_q_children: [s.voice_q_children], voice_q_other: [s.voice_q_other], voice_q_notes: [s.voice_q_notes],
@@ -55,7 +66,6 @@ export function narration(lang, mode = "pickup") {
     voice_m_children_sex: [s.voice_missing_intro, s.voice_m_children_sex],
     voice_consents: [s.voice_summary_intro],
     voice_consents_text: [s.voice_consents],
-    closed: [s.closed_title, s.closed_text],
   };
 }
 
@@ -88,7 +98,7 @@ async function main() {
   const manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : { model: MODEL, files: {} };
   const key = loadKey();
   let rendered = 0, chars = 0;
-  const MODE_STEPS = ["home", "done"];   // the screens whose text changes with season.mode
+  const MODE_STEPS = ["cityzip", "done"];   // the screens whose text changes with season.mode
   for (const lang of ["en", "es"]) {
     mkdirSync(new URL(`${lang}/`, root), { recursive: true });
     const jobs = Object.entries(narration(lang)).map(([step, lines]) => [step, lines]);

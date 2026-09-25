@@ -1,0 +1,41 @@
+title: {en: How this site is built, es: Cómo está hecho este sitio}
+sections:
+  - title: {en: For partner agencies and curious neighbors, es: Para agencias aliadas y vecinos curiosos}
+    body:
+      en: >
+        This site and its application form are open source, built by volunteers for Truckee Community Cares.
+        We wrote it so that other small organizations serving immigrant and low-income families can copy it.
+        The code is at [github.com/micrui/truckee-cares](https://github.com/micrui/truckee-cares).
+      es: >
+        Este sitio y su formulario son de código abierto, hechos por voluntarios para Truckee Community Cares.
+        Lo escribimos para que otras organizaciones pequeñas que sirven a familias inmigrantes y de bajos
+        ingresos puedan copiarlo. El código está en [github.com/micrui/truckee-cares](https://github.com/micrui/truckee-cares).
+  - title: {en: What happens to an application, es: Qué pasa con una solicitud}
+    body:
+      en: >
+        The form encrypts each application on the applicant's own phone before sending it. The server that
+        receives it stores only the encrypted copy and cannot open it. Only a volunteer's computer, with a key
+        that never leaves it, can read applications. No account, no login, no tracking, no ads. The server keeps
+        no addresses of the phones that connect to it. After distribution day the encrypted copies are deleted.
+      es: >
+        El formulario cifra cada solicitud en el celular de la persona antes de enviarla. El servidor que la
+        recibe guarda solo la copia cifrada y no puede abrirla. Solo la computadora de un voluntario, con una
+        llave que nunca sale de ella, puede leer las solicitudes. Sin cuenta, sin contraseña, sin rastreo, sin
+        anuncios. El servidor no guarda las direcciones de los celulares que se conectan. Después del día de la
+        entrega, las copias cifradas se borran.
+  - title: {en: Voice and help features, es: Funciones de voz y ayuda}
+    body:
+      en: >
+        Every screen can be read aloud with a recorded voice. The help chat and the microphone options send
+        what a person says or types to a speech and language service (OpenAI and Anthropic) to write it down or
+        answer; we keep none of it. The finished application is still encrypted on the phone. Details are on the
+        [privacy page](../privacy/).
+      es: >
+        Cada pantalla se puede escuchar con una voz grabada. El chat de ayuda y las opciones con micrófono
+        envían lo que la persona dice o escribe a un servicio de voz y lenguaje (OpenAI y Anthropic) para
+        escribirlo o responder; no guardamos nada de eso. La solicitud terminada sigue cifrada en el celular.
+        Los detalles están en la [página de privacidad](../privacy/).
+  - title: {en: Cost, es: Costo}
+    body:
+      en: The website is free to host. The form's backend and its voice features cost a few dollars per season.
+      es: Alojar el sitio es gratis. El servidor del formulario y sus funciones de voz cuestan unos pocos dólares por temporada.
