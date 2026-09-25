@@ -143,6 +143,7 @@ def build(base_path="", out=ROOT / "dist"):
 
     client_config = {k: config[k] for k in CLIENT_CONFIG_KEYS if k in config}
     client_config["base_path"] = base_path
+    client_config["asset_v"] = asset_v
     client_config["schools"] = schools.get("schools", [])
     (out / "config.json").write_text(json.dumps(client_config, indent=2, ensure_ascii=False))
 

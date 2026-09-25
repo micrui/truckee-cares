@@ -2,7 +2,7 @@
 {% block title %}{{ page.title }} · {{ s.org }}{% endblock %}
 {% block header %}{% endblock %}
 {% block main %}
-<div id="app" class="apply" data-lang="{{ lang }}" data-base="{{ base }}">
+<div id="app" class="apply" data-lang="{{ lang }}" data-base="{{ base }}" data-v="{{ asset_v }}">
   <noscript><p class="error">This form needs JavaScript. / Este formulario necesita JavaScript.
     <a href="sms:{{ config.help_phone }}">Text us / Envíe un texto: {{ config.help_phone }}</a></p></noscript>
   <p class="muted">Loading… / Cargando…</p>

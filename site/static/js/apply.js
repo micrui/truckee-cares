@@ -1060,6 +1060,17 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   try { const stored = localStorage.getItem(LANG_KEY); if (stored && stored !== lang && STRINGS[stored]) { lang = stored; strings = STRINGS[lang]; document.documentElement.lang = lang; } } catch (e) {}
   try { config = await withTimeout(fetch(`${base}/config.json`, { cache: "no-store" }).then((r) => r.json()), 15000); }
   catch (e) { renderFallback("We could not load the form. Check your connection, or text us. / No pudimos cargar el formulario. Revise su conexión o mándenos un texto."); return; }
+  // A cached page can point at an older script than the one just deployed. If the live
+  // config carries a newer build id than this page, reload once with a fresh URL.
+  try {
+    const mine = root.dataset.v || "";
+    const params0 = new URLSearchParams(location.search);
+    if (config.asset_v && mine && config.asset_v !== mine && params0.get("b") !== config.asset_v) {
+      params0.set("b", config.asset_v);
+      location.replace(`${location.pathname}?${params0.toString()}${location.hash}`);
+      return;
+    }
+  } catch (e) {}
   try { const m = await withTimeout(fetch(`${base}/static/audio/manifest.json`, { cache: "no-store" }), 8000); if (m.ok) audioManifest = await m.json(); } catch (e) {}
   gate = computeGate();
   const params = new URLSearchParams(location.search);
