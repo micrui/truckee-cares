@@ -52,6 +52,23 @@
     <p class="muted">{{ s.footer_note }}</p>
   </div>
 </footer>
+{% if other_path is defined %}
+<script>
+  // Remember the language. A switch stores the choice; a page in the other language
+  // sends the visitor to its twin, keeping any query string and hash.
+  (function () {
+    var here = "{{ lang }}", other = "{{ other_lang }}", key = "tcc-lang";
+    var sw = document.querySelector("[data-lang-switch]");
+    if (sw) sw.addEventListener("click", function () { try { localStorage.setItem(key, other); } catch (e) {} });
+    try {
+      var want = localStorage.getItem(key);
+      if (want && want !== here && (want === "en" || want === "es")) {
+        location.replace(sw.getAttribute("href") + location.search + location.hash);
+      }
+    } catch (e) {}
+  })();
+</script>
+{% endif %}
 {% block scripts %}{% endblock %}
 </body>
 </html>
