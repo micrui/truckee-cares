@@ -10,8 +10,9 @@ anything that could hurt them.** Every change is judged against that first.
 
 ## Rules
 
-1. Plaintext applications exist in exactly two places: the applicant's phone and the
-   review tool's SQLite on a board member's Mac. Never add a third. Never log payloads.
+1. Plaintext applications exist in exactly two places: the applicant's phone (only while
+   the form is open; afterwards the phone keeps a code and a decryption key, not answers)
+   and the review tool's SQLite on a board member's Mac. Never add a third. Never log payloads.
    The Worker stores ciphertext, status words, timestamps. Nothing else. No IPs.
    One transient exception, which Mike accepted on purpose: the microphone, the help
    chat, and the "in your own words" box send what the person says or types through the

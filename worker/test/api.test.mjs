@@ -15,7 +15,7 @@ function fakeDB() {
         async run() {
           if (sql.startsWith("INSERT")) {
             if (rows.has(args[0])) throw new Error("UNIQUE constraint failed");
-            rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null, supersedes: args[5] ?? null, note: "" });
+            rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null, supersedes: args[5] ?? null, note: "", self_copy: args[6] ?? null });
             return { meta: { changes: 1 } };
           }
           if (sql.startsWith("UPDATE")) { const r = rows.get(args[2]); if (r) { r.status = args[0]; r.updated_at = args[1]; if (args.length > 3) r.note = args[3]; } return { meta: { changes: r ? 1 : 0 } }; }
@@ -436,4 +436,17 @@ test("public status lookup by code returns the status word and note only", async
   const r3 = await (await handle(req("GET", `/api/status/${id}`), e)).json();
   assert.equal(r3.status, "superseded");
   assert.equal(r3.superseded_by, edit.id);
+});
+
+test("the applicant's encrypted self copy is stored and returned only on request", async () => {
+  const e = env();
+  const inSeason = Date.parse("2026-10-20T12:00:00-07:00");
+  const { id } = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, self_copy: CT } }), e, inSeason)).json();
+  const plain = await (await handle(req("GET", `/api/status/${id}`), e)).json();
+  assert.equal(plain.has_copy, true);
+  assert.equal("self_copy" in plain, false);
+  const withCopy = await (await handle(req("GET", `/api/status/${id}?copy=1`), e)).json();
+  assert.equal(withCopy.self_copy, CT);
+  const bad = await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, self_copy: "{\"plain\":true}" } }), e, inSeason);
+  assert.equal(bad.status, 400);
 });

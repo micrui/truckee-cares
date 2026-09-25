@@ -109,9 +109,10 @@ and the board's short note: received, we need something from you, approved, not 
 year, duplicate, out of area, or replaced. Decisions made in the console reach the status
 page after `bin/review push`. To ask a family for something, choose `needs_info` and type
 a one-line note in their language with no personal details; the status page shows it with
-Text and Call buttons. A family who wants to change something fills the form out again
-from that page; the new application replaces the old one and inherits its family and
-decision in the console.
+Text and Call buttons. A family who wants to change something taps "Edit and resend" on the same phone (the
+answers come back from an encrypted copy only that phone can open) or fills the form out
+again from another phone; either way the new application replaces the old one and
+inherits its family and decision in the console.
 
 ## Each season
 

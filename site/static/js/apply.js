@@ -5,7 +5,7 @@
 // never sees plaintext. Optional "remember me" keeps a copy in localStorage on
 // nothing is kept on the device after a send.
 import { STRINGS, ADULT_SIZES, CHILD_SIZES } from "./apply-strings.js";
-import { Encrypter, armor } from "./age.js";
+import { Encrypter, Decrypter, armor } from "./age.js";
 
 // One decision per screen. The list depends on the answers so far (helper details,
 // mailing address, one pair of screens per child), so it is computed, not fixed.
@@ -23,9 +23,10 @@ let cur = "welcome";
 let editReturn = null;   // set when Edit is tapped on the review screen
 let supersedes = "";     // code of the application this send replaces (an edit)
 let check = { open: false, code: "", busy: false, result: null, error: "" };   // "Check my application"
-let sentStatus = null;   // live status of this session's send, for the welcome card
-async function fetchStatus(code) {
-  const r = await fetch(`${config.api_base}/api/status/${encodeURIComponent(code)}`, { cache: "no-store", headers: apiHeaders() });
+let sentStatus = null;   // live status of the known application, for the welcome card
+let copyError = "";      // shown on the status card when the saved copy cannot be opened
+async function fetchStatus(code, withCopy = false) {
+  const r = await fetch(`${config.api_base}/api/status/${encodeURIComponent(code)}${withCopy ? "?copy=1" : ""}`, { cache: "no-store", headers: apiHeaders() });
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(r.status);
   return r.json();
@@ -42,7 +43,10 @@ function statusCard(st) {
     ${st.note ? `<p class="why">${esc(st.note)}</p>` : ""}
     <p>${esc(t(textKey))}</p>
     ${key === "needs_info" ? `<p class="help-links"><a class="btn btn-primary" href="sms:${config.help_phone}">💬 ${t("help_text_msg")}</a><a class="btn btn-primary" href="tel:${config.help_phone}">📞 ${t("help_call")}</a></p>` : ""}
-    ${canChange ? `<p class="muted" style="margin-top:12px">${t("st_change")}</p><button type="button" class="btn btn-ghost" data-action="redo" data-code="${esc(st.id)}">✏️ ${t("st_change_btn")}</button>` : ""}
+    ${canChange ? (codeKey(st.id) && st.has_copy
+      ? `<button type="button" class="btn btn-primary" data-action="edit-copy" data-code="${esc(st.id)}" style="margin-top:12px">✏️ ${t("edit_resend")}</button>`
+      : `<p class="muted" style="margin-top:12px">${t("st_change_other")}</p><button type="button" class="btn btn-ghost" data-action="redo" data-code="${esc(st.id)}">✏️ ${t("st_change_btn")}</button>`) : ""}
+    ${copyError ? `<p class="error">${esc(copyError)}</p>` : ""}
   </div>`;
 }
 let lastSupersedes = ""; // shown on the done screen after an edit
@@ -67,12 +71,30 @@ function loadCodes() {
   try { const d = JSON.parse(localStorage.getItem(CODES_KEY)); if (Array.isArray(d)) return d.filter((c) => c && c.id && (c.season === (config && config.season) || (previewMode && c.season === "preview"))); } catch (e) {}
   return [];
 }
-function rememberCode(id, seasonId, sentAt) {
+function rememberCode(id, seasonId, sentAt, key) {
   try {
     const all = (() => { try { const d = JSON.parse(localStorage.getItem(CODES_KEY)); return Array.isArray(d) ? d : []; } catch (e) { return []; } })();
-    const list = [{ id, season: seasonId || (previewMode ? "preview" : config.season), sent_at: sentAt || new Date().toISOString() }, ...all.filter((c) => c && c.id !== id)].slice(0, 5);
+    const prev = all.find((c) => c && c.id === id) || {};
+    const entry = { id, season: seasonId || (previewMode ? "preview" : config.season), sent_at: sentAt || new Date().toISOString(), k: key || prev.k || "" };
+    const list = [entry, ...all.filter((c) => c && c.id !== id)].slice(0, 5);
     localStorage.setItem(CODES_KEY, JSON.stringify(list));
   } catch (e) {}
+}
+const codeKey = (id) => (loadCodes().find((c) => c.id === id) || {}).k || "";
+function randomKey() { const b = crypto.getRandomValues(new Uint8Array(16)); return btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+// The applicant's own copy of their answers: encrypted to a random key that never leaves
+// this phone, stored on the server next to the application, opened only here.
+async function makeSelfCopy(key) {
+  const { consent_all, ...keep } = state;
+  const enc = new Encrypter(); enc.setPassphrase(key); enc.setScryptWorkFactor(12);
+  return armor.encode(await enc.encrypt(JSON.stringify(keep)));
+}
+async function openSelfCopy(code) {
+  const key = codeKey(code); if (!key) throw new Error("no key");
+  const st = await fetchStatus(code, true);
+  if (!st || !st.self_copy) throw new Error("no copy");
+  const dec = new Decrypter(); dec.addPassphrase(key);
+  return JSON.parse(await dec.decrypt(armor.decode(st.self_copy), "text"));
 }
 function forgetCode(id) { try { localStorage.setItem(CODES_KEY, JSON.stringify(loadCodes().filter((c) => c.id !== id))); } catch (e) {} }
 const LANG_KEY = "tcc-lang";
@@ -117,8 +139,13 @@ function t(key, ...args) {
   return typeof v === "function" ? v(...args) : v ?? key;
 }
 const apiHeaders = (extra = {}) => ({ ...(previewToken ? { "x-preview": previewToken } : {}), ...extra });
-function saveDraft() { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state })); } catch (e) {} }
-function loadDraft() { try { const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY)); if (d && d.state) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; } } catch (e) {} }
+function saveDraft() { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state, supersedes, editReturn })); } catch (e) {} }
+function loadDraft() {
+  try {
+    const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY));
+    if (d && d.state) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; supersedes = d.supersedes || ""; editReturn = d.editReturn || null; }
+  } catch (e) {}
+}
 // Nothing about an application is kept on the device. Earlier builds could save answers
 // for next year; that is gone, and any old copy is removed at boot.
 function loadRemembered() { return null; }
@@ -224,26 +251,32 @@ function renderStep() {
   const last = id === "review";
   const nav = `<div class="nav-row">
     ${id !== "welcome" ? `<button class="btn btn-ghost" data-action="back">${t("back")}</button>` : ""}
-    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? t("review_send") : editReturn ? t("done_editing") : t("next")}</button></div>`;
+    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? (supersedes ? t("replace_send") : t("review_send")) : editReturn ? t("done_editing") : t("next")}</button></div>`;
   const q = (text, hint) => `<h1 class="q-title">${esc(text)}</h1>${hint ? `<p class="why">${esc(hint)}</p>` : ""}`;
 
   if (id === "welcome") {
-    const sent = loadSent();
+    const sent = null;
     const latest = loadCodes()[0] || null;
-    return `<div class="step welcome"><h1>${t("welcome_title")}</h1><p class="lead-short">${t("welcome_short")}</p>
-      ${sent ? `<div class="card"><p><strong>${esc(t("sent_note", sent.id))}</strong></p>
-        ${sentStatus && sentStatus.id === sent.id ? statusCard(sentStatus) : ""}
-        <button class="btn btn-primary btn-big" data-action="edit-sent">✏️ ${t("sent_edit")}</button>
-        <button class="btn btn-ghost btn-big" data-action="new-family" style="margin-top:10px">👨‍👩‍👧 ${t("sent_new")}</button></div>`
-      : latest ? `<div class="card"><p><strong>${t("your_application")}: ${esc(latest.id)}</strong></p>
-        ${sentStatus && sentStatus.id === latest.id ? statusCard(sentStatus) : `<p class="muted">${t("check_sent_on", new Date(latest.sent_at).toLocaleDateString(lang === "es" ? "es-MX" : "en-US", { month: "long", day: "numeric" }))}</p>`}
-        <p class="small-links"><button type="button" class="btn btn-ghost" data-action="forget-code" data-code="${esc(latest.id)}">${t("forget_code")}</button></p>
-        <button class="btn btn-secondary btn-big btn-hero" data-action="next" style="margin-top:10px">${t("start")}</button></div>`
-      : `<button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>`}
-      ${check.open ? `<div class="card"><h2 class="q-title" style="font-size:1.25rem">${t("check_title")}</h2><p class="hint">${t("check_hint")}</p>
+    const known = latest ? latest.id : "";
+    const status = sentStatus && sentStatus.id === known ? sentStatus : null;
+    const checkBox = check.open ? `<div class="card"><h2 class="q-title" style="font-size:1.25rem">${t("check_title")}</h2><p class="hint">${t("check_hint")}</p>
         <form data-action="check-form" class="assist-form"><input id="check-code" type="text" value="${esc(check.code)}" placeholder="TCC-26-ABCDE" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="14" ${check.busy ? "disabled" : ""}><button class="btn btn-primary" ${check.busy ? "disabled" : ""}>${t("check_go")}</button></form>
-        ${check.error ? `<p class="error">${esc(check.error)}</p>` : ""}
-        ${check.result ? statusCard(check.result) : ""}</div>` : `<button type="button" class="btn btn-ghost btn-big" data-action="check-open" style="margin-top:12px">🔎 ${latest || sent ? t("check_other") : t("check_btn")}</button>`}
+        ${check.error ? `<p class="error">${esc(check.error)}</p>` : ""}</div>` : "";
+    // Someone with an application on this phone: one card for it, then one clear next step.
+    if (known) {
+      return `<div class="step welcome"><h1>${t("welcome_title")}</h1>
+        <div class="card"><p><strong>${t("your_application")}: ${esc(known)}</strong></p>
+          ${status ? statusCard(status) : `<p class="muted">${t("checking")}</p>`}
+          <p class="small-links"><button type="button" class="btn btn-ghost" data-action="forget-code" data-code="${esc(known)}">${t("forget_code")}</button></p></div>
+        ${sent ? `<button class="btn btn-primary btn-big" data-action="edit-sent">✏️ ${t("sent_edit")}</button>` : ""}
+        <button class="btn btn-secondary btn-big btn-hero" data-action="new-family" style="margin-top:10px">👨‍👩‍👧 ${t("apply_another")}</button>
+        ${checkBox || `<p class="small-links"><button type="button" class="btn btn-ghost" data-action="check-open">🔎 ${t("check_other")}</button></p>`}
+        <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
+      </div>`;
+    }
+    return `<div class="step welcome"><h1>${t("welcome_title")}</h1><p class="lead-short">${t("welcome_short")}</p>
+      <button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>
+      ${checkBox || `<button type="button" class="btn btn-ghost btn-big" data-action="check-open" style="margin-top:12px">🔎 ${t("check_btn")}</button>`}
       <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
       ${demoMode && voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
       ${demoMode && assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
@@ -307,6 +340,7 @@ function renderStep() {
       ${state.mail_same === "no" ? row(t("labels").mailing, esc(mail), "mail_addr") : ""}
       ${row(t("labels").adults, esc(`${state.adults}${state.adult_coat_sizes.length ? " · 🧥 " + state.adult_coat_sizes.join(", ") : ""}`), "adults")}
       ${row(t("labels").children, kids, "has_children")}</dl>
+      ${state.has_children === "yes" ? `<p><button type="button" class="btn btn-ghost" data-action="add-child">+ ${t("add_child")}</button></p>` : ""}
       <div class="field ${errors.consent_all ? "invalid" : ""}"><div class="choices stack"><label><input type="checkbox" name="consent_all" ${state.consent_all ? "checked" : ""}> ${esc(t("confirm_all"))}</label></div>
       ${errors.consent_all ? `<div class="msg" role="alert">${t("required")}</div>` : ""}</div>
       ${nav}</div>`;
@@ -549,12 +583,22 @@ root.addEventListener("click", async (ev) => {
     const list = screens(); const i = list.indexOf(cur);
     if (editReturn) {
       // Back to the review unless the change opened screens that still need an answer.
+      // Child screens run through to "another child?" so a child can be added or removed.
+      const nxt = list[i + 1];
       const pending = list.slice(i + 1, list.indexOf("review")).find((sid) => Object.keys(validate(sid)).length);
-      if (pending) cur = pending; else { cur = "review"; editReturn = null; }
+      if (pending) cur = pending;
+      else if (nxt && nxt.startsWith("child:") && (cur === "has_children" || cur.startsWith("child:"))) cur = nxt;
+      else { cur = "review"; editReturn = null; }
     } else cur = list[Math.min(i + 1, list.length - 1)];
   }
   if (a === "back") { errors = {}; if (editReturn) { cur = "review"; editReturn = null; } else { const list = screens(); cur = list[Math.max(list.indexOf(cur) - 1, 0)]; } }
   if (a === "goto") { errors = {}; editReturn = cur === "review" ? "review" : null; cur = screens().includes(el.dataset.screen) ? el.dataset.screen : "review"; }
+  if (a === "add-child") {
+    errors = {}; editReturn = "review";
+    if (state.children.length) state.children[state.children.length - 1].more = "yes";
+    state.children.push(blankChild()); state.has_children = "yes"; state.no_children = false;
+    cur = `child:${state.children.length - 1}:a`;
+  }
   if (a === "rm-child") { const i = +el.dataset.i; state.children.splice(i, 1); if (!state.children.length) { state.has_children = ""; cur = "has_children"; } else { const j = Math.min(i, state.children.length - 1); state.children[j].more = j === state.children.length - 1 ? "no" : "yes"; cur = `child:${j}:a`; } }
   if (a === "add-size") { state.adult_coat_sizes.push(el.dataset.size); }
   if (a === "rm-size") { state.adult_coat_sizes.splice(+el.dataset.i, 1); }
@@ -575,12 +619,23 @@ root.addEventListener("click", async (ev) => {
   }
   if (a === "new-family") { clearSent(); state = blankState(); supersedes = ""; cur = "helper"; }
   if (a === "check-open") {
-    const known = loadSent()?.id || (loadCodes()[0] || {}).id || "";
-    check = { open: true, code: known, busy: false, result: null, error: "" }; scrollTop = false; render();
-    const inp = root.querySelector("#check-code"); if (inp) { inp.focus(); if (known) inp.select(); }
+    check = { open: true, code: "", busy: false, result: null, error: "" }; scrollTop = false; render();
+    root.querySelector("#check-code")?.focus();
     return;
   }
-  if (a === "forget-code") { forgetCode(el.dataset.code); sentStatus = null; scrollTop = false; render(); return; }
+  if (a === "edit-copy") {
+    copyError = ""; el.disabled = true; el.textContent = t("opening_copy");
+    try {
+      const saved = await openSelfCopy(el.dataset.code);
+      state = { ...blankState(), ...saved, consent_all: false }; supersedes = el.dataset.code; editReturn = null; cur = "review"; saveDraft(); render();
+    } catch (e) { console.error(e); copyError = t("st_copy_failed"); scrollTop = false; render(); }
+    return;
+  }
+  if (a === "forget-code") {
+    forgetCode(el.dataset.code); if (loadSent()?.id === el.dataset.code) clearSent(); sentStatus = null; scrollTop = false; render();
+    const nxt = loadCodes()[0]; if (nxt) fetchStatus(nxt.id).then((st) => { if (st && cur === "welcome") { sentStatus = st; scrollTop = false; render(); } }).catch(() => {});
+    return;
+  }
   if (a === "redo") { clearSent(); state = blankState(); supersedes = String(el.dataset.code || "").toUpperCase(); check = { open: false, code: "", busy: false, result: null, error: "" }; cur = "helper"; }
   if (a === "again") { clearSent(); state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lastSupersedes = ""; }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
@@ -594,7 +649,7 @@ root.addEventListener("submit", async (ev) => {
     check.code = code; check.error = ""; check.result = null;
     if (!/^TCC-[A-Z0-9]{2}-[A-Z0-9]{5}$/.test(code)) { check.error = t("check_not_found"); scrollTop = false; render(); return; }
     check.busy = true; scrollTop = false; render();
-    try { const st = await fetchStatus(code); if (!st) check.error = t("check_not_found"); else { check.result = st; rememberCode(st.id, st.season, st.created_at); } }
+    try { const st = await fetchStatus(code); if (!st) check.error = t("check_not_found"); else { rememberCode(st.id, st.season, st.created_at); clearSent(); sentStatus = st; check.open = false; } }
     catch (e) { check.error = t("send_error"); }
     check.busy = false; scrollTop = false; render();
     return;
@@ -869,8 +924,10 @@ async function submit() {
     const enc = new Encrypter();
     for (const r of config.recipients) enc.addRecipient(r);
     const ciphertext = armor.encode(await enc.encrypt(JSON.stringify(payload())));
+    const selfKey = randomKey();
+    const self_copy = await makeSelfCopy(selfKey);
     const res = await fetch(`${config.api_base}/api/apply`, { method: "POST", headers: apiHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext, supersedes: supersedes || undefined }) });
+      body: JSON.stringify({ season: previewMode ? "preview" : config.season, lang, ciphertext, supersedes: supersedes || undefined, self_copy }) });
     if (!res.ok) {
       let err = ""; try { err = (await res.json()).error || ""; } catch (e) {}
       if (res.status === 403 && (err === "closed" || err === "not_open")) { gate = { open: false, reason: err }; view = "form"; voice = null; render(); return; }
@@ -893,8 +950,8 @@ async function submit() {
     const data = await res.json();
     doneId = data.id;
     lastSupersedes = supersedes; supersedes = ""; sentStatus = null;
-    rememberCode(doneId);
-    try { const { consent_all, ...keep } = state; sessionStorage.setItem(SENT_KEY, JSON.stringify({ id: doneId, sent_at: new Date().toISOString(), preview: previewMode, state: keep })); } catch (e) {}
+    rememberCode(doneId, previewMode ? "preview" : config.season, new Date().toISOString(), selfKey);
+    clearSent();
     try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
     const fromVoice = view === "voice";
@@ -1199,6 +1256,6 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
   loadDraft();
   render();
-  const known = loadSent()?.id || (loadCodes()[0] || {}).id;
+  const known = (loadCodes()[0] || {}).id;
   if (known && cur === "welcome") { try { sentStatus = await withTimeout(fetchStatus(known), 8000); if (cur === "welcome") { scrollTop = false; render(); } } catch (e) {} }
 })();

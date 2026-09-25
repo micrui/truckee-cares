@@ -182,3 +182,15 @@ thing at a time anyway.
 The home page leads with the application and the volunteer help line. Encryption talk
 moved off the home page to the privacy page and a new "How it's built" page for partner
 agencies.
+
+## 2026-09-25 Editing an application: a copy the phone alone can open
+
+Families need to fix a phone number or add a child after sending. The server cannot hand
+back answers it cannot read, so on every send the phone also encrypts a copy of the
+answers to a random key that stays only on that phone (in the browser's local storage,
+next to the confirmation code) and stores the copy on the server beside the application.
+"Edit and resend" fetches the copy, decrypts it on the phone, opens the review screen with
+the answers filled in, and "Replace and send" files a replacement that supersedes the old
+code on the server and in the review tool. A different phone has no key and gets "fill it
+out again," which also replaces. The server still holds nothing it can read; the phone
+holds a key and a code, never the answers.

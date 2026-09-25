@@ -185,12 +185,19 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
       if (!prior || prior.season !== target || prior.status === "superseded") return json({ error: "bad_supersedes" }, 400, cors);
       supersedes = prior.id;
     }
+    // Optional: the applicant's own copy of their answers, encrypted on the phone to a key
+    // that stays on the phone. Lets the same phone edit later. Opaque to us, like the rest.
+    let selfCopy = null;
+    if (body.self_copy !== undefined && body.self_copy !== null && body.self_copy !== "") {
+      if (!looksLikeAgeArmor(body.self_copy)) return json({ error: "bad_self_copy" }, 400, cors);
+      selfCopy = body.self_copy;
+    }
     const createdAt = new Date().toISOString();
     for (let attempt = 0; attempt < 5; attempt++) {
       const id = makeId(target);
       try {
-        await env.DB.prepare("INSERT INTO submissions (id, season, lang, created_at, ciphertext, supersedes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
-          .bind(id, target, lang === "es" ? "es" : "en", createdAt, ciphertext, supersedes).run();
+        await env.DB.prepare("INSERT INTO submissions (id, season, lang, created_at, ciphertext, supersedes, self_copy) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
+          .bind(id, target, lang === "es" ? "es" : "en", createdAt, ciphertext, supersedes, selfCopy).run();
         if (supersedes) await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2 WHERE id = ?3").bind("superseded", createdAt, supersedes).run();
         return json({ id, supersedes }, 201, cors);
       } catch (e) {
@@ -236,7 +243,7 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
     const hit = await limited(env, "status:" + clientKey(req), cors);
     if (hit) return hit;
     if (!ID_RE.test(sm[1])) return json({ error: "not_found" }, 404, cors);
-    const row = await env.DB.prepare("SELECT id, season, status, note, created_at, updated_at, supersedes FROM submissions WHERE id = ?1").bind(sm[1]).first();
+    const row = await env.DB.prepare("SELECT id, season, status, note, created_at, updated_at, supersedes, self_copy FROM submissions WHERE id = ?1").bind(sm[1]).first();
     if (!row) return json({ error: "not_found" }, 404, cors);
     let superseded_by = null;
     if (row.status === "superseded") {
@@ -244,7 +251,9 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
       superseded_by = nxt ? nxt.id : null;
     }
     const status = row.status === "new" ? "fetched" : row.status;   // "new" and "fetched" both mean received
-    return json({ id: row.id, season: row.season, status, note: row.note || "", created_at: row.created_at, updated_at: row.updated_at, superseded_by, mode: season.mode }, 200, cors);
+    const out = { id: row.id, season: row.season, status, note: row.note || "", created_at: row.created_at, updated_at: row.updated_at, superseded_by, mode: season.mode, has_copy: !!row.self_copy };
+    if (url.searchParams.get("copy") === "1" && row.self_copy) out.self_copy = row.self_copy;
+    return json(out, 200, cors);
   }
 
   if (path.startsWith("/api/admin/")) {
