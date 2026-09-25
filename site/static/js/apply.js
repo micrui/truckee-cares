@@ -3,7 +3,7 @@
 // sessionStorage. On submit the answers are encrypted in the browser with age
 // to the season recipients in config.json and POSTed as ciphertext. The server
 // never sees plaintext. Optional "remember me" keeps a copy in localStorage on
-// the applicant's own device for prefill next year; nothing is sent.
+// nothing is kept on the device after a send.
 import { STRINGS, ADULT_SIZES, CHILD_SIZES } from "./apply-strings.js";
 import { Encrypter, armor } from "./age.js";
 
@@ -20,6 +20,7 @@ function screens() {
   return list;
 }
 let cur = "welcome";
+let editReturn = null;   // set when Edit is tapped on the review screen
 const stepIndex = () => Math.max(0, screens().indexOf(cur));
 let demoMode = false;   // ?voice: shows the voice-first and free-form demos on the welcome screen
 const DRAFT_KEY = "tcc-draft";
@@ -68,7 +69,9 @@ function t(key, ...args) {
 const apiHeaders = (extra = {}) => ({ ...(previewToken ? { "x-preview": previewToken } : {}), ...extra });
 function saveDraft() { try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ cur, state })); } catch (e) {} }
 function loadDraft() { try { const d = JSON.parse(sessionStorage.getItem(DRAFT_KEY)); if (d && d.state) { state = { ...blankState(), ...d.state }; cur = screens().includes(d.cur) ? d.cur : "welcome"; } } catch (e) {} }
-function loadRemembered() { try { return JSON.parse(localStorage.getItem(REMEMBER_KEY)); } catch (e) { return null; } }
+// Nothing about an application is kept on the device. Earlier builds could save answers
+// for next year; that is gone, and any old copy is removed at boot.
+function loadRemembered() { return null; }
 function fmtDate(iso) { return new Date(iso).toLocaleDateString(lang === "es" ? "es-MX" : "en-US", { month: "long", day: "numeric", timeZone: config.timezone }); }
 function localToUtc(iso, tz) {
   // Interpret a naive ISO time as wall-clock time in tz. Two passes handle DST edges.
@@ -171,7 +174,7 @@ function renderStep() {
   const last = id === "review";
   const nav = `<div class="nav-row">
     ${id !== "welcome" ? `<button class="btn btn-ghost" data-action="back">${t("back")}</button>` : ""}
-    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? t("review_send") : t("next")}</button></div>`;
+    <button class="btn btn-primary" data-action="${last ? "submit" : "next"}">${last ? t("review_send") : editReturn ? t("done_editing") : t("next")}</button></div>`;
   const q = (text, hint) => `<h1 class="q-title">${esc(text)}</h1>${hint ? `<p class="why">${esc(hint)}</p>` : ""}`;
 
   if (id === "welcome") {
@@ -246,7 +249,6 @@ function renderStep() {
       ${row(t("labels").children, kids, "has_children")}</dl>
       <div class="field ${errors.consent_all ? "invalid" : ""}"><div class="choices stack"><label><input type="checkbox" name="consent_all" ${state.consent_all ? "checked" : ""}> ${esc(t("confirm_all"))}</label></div>
       ${errors.consent_all ? `<div class="msg" role="alert">${t("required")}</div>` : ""}</div>
-      ${state.helper === "yes" ? `<p class="hint">${t("remember_helper")}</p>` : `<div class="field"><div class="choices stack"><label><input type="checkbox" name="remember" ${state.remember ? "checked" : ""}> ${t("remember")}</label></div></div>`}
       ${nav}</div>`;
   }
   return `<div class="step"><p class="error">?</p></div>`;
@@ -467,15 +469,31 @@ root.addEventListener("click", async (ev) => {
   if (a === "voice-review") { leaveVoice(); return; }
   if (a === "voice-send") { state.consent_all = true; state.remember = false; await submit(); return; }
   if (a === "reload") { location.reload(); return; }
-  if (a === "lang") { readInputs(); setLang(el.dataset.lang); return; }
+  if (a === "lang") {
+    readInputs();
+    const wasSpeaking = speaking || (voiceAudio && !voiceAudio.paused);
+    const inVoice = view === "voice";
+    setLang(el.dataset.lang);
+    if (inVoice && voice) {
+      if (voice.phase === "intro") voicePlay(`${base}/static/audio/${lang}/voice_intro.mp3`, () => {});
+      else if (voice.phase === "confirm") { voice.readback = readbackFor(currentQuestion()); render(); voiceSay(voice.readback); }
+      else if (voice.phase === "ask") voiceAsk(currentQuestion().key);
+    } else if (wasSpeaking) speakPage();
+    return;
+  }
   readInputs();
   if (a === "next") {
     errors = validate(cur); if (Object.keys(errors).length) return render();
     afterAnswer(cur);
-    const list = screens(); cur = list[Math.min(list.indexOf(cur) + 1, list.length - 1)];
+    const list = screens(); const i = list.indexOf(cur);
+    if (editReturn) {
+      // Back to the review unless the change opened screens that still need an answer.
+      const pending = list.slice(i + 1, list.indexOf("review")).find((sid) => Object.keys(validate(sid)).length);
+      if (pending) cur = pending; else { cur = "review"; editReturn = null; }
+    } else cur = list[Math.min(i + 1, list.length - 1)];
   }
-  if (a === "back") { errors = {}; const list = screens(); cur = list[Math.max(list.indexOf(cur) - 1, 0)]; }
-  if (a === "goto") { errors = {}; cur = screens().includes(el.dataset.screen) ? el.dataset.screen : "review"; }
+  if (a === "back") { errors = {}; if (editReturn) { cur = "review"; editReturn = null; } else { const list = screens(); cur = list[Math.max(list.indexOf(cur) - 1, 0)]; } }
+  if (a === "goto") { errors = {}; editReturn = cur === "review" ? "review" : null; cur = screens().includes(el.dataset.screen) ? el.dataset.screen : "review"; }
   if (a === "rm-child") { const i = +el.dataset.i; state.children.splice(i, 1); if (!state.children.length) { state.has_children = ""; cur = "has_children"; } else { const j = Math.min(i, state.children.length - 1); state.children[j].more = j === state.children.length - 1 ? "no" : "yes"; cur = `child:${j}:a`; } }
   if (a === "add-size") { state.adult_coat_sizes.push(el.dataset.size); }
   if (a === "rm-size") { state.adult_coat_sizes.splice(+el.dataset.i, 1); }
@@ -490,7 +508,7 @@ root.addEventListener("click", async (ev) => {
     prefilled = true; cur = "helper";
   }
   if (a === "fresh") { try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} prefilled = true; cur = "helper"; }
-  if (a === "again") { state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {} }
+  if (a === "again") { state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
   errors = {}; saveDraft(); render();
 });
@@ -786,11 +804,7 @@ async function submit() {
     }
     const data = await res.json();
     doneId = data.id;
-    const remember = state.remember && state.helper !== "yes" && view !== "voice";
-    try {
-      if (remember) { const { consent_all, ...keep } = state; localStorage.setItem(REMEMBER_KEY, JSON.stringify({ saved: new Date().toISOString(), state: keep })); }
-      else localStorage.removeItem(REMEMBER_KEY);
-    } catch (e) {}
+    try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
     const fromVoice = view === "voice";
     view = "done"; voice = null;
@@ -1046,7 +1060,7 @@ function renderVoice() {
 }
 
 // Debug hook for tests: read-only view of internal state.
-window.__tcc = { get rec() { return { state: rec.state, error: rec.error }; }, get voice() { return voice; }, get view() { return view; }, get state() { return state; }, get cur() { return cur; }, get screens() { return screens(); } };
+window.__tcc = { get rec() { return { state: rec.state, error: rec.error }; }, get voice() { return voice; }, get view() { return view; }, get state() { return state; }, get cur() { return cur; }, get screens() { return screens(); }, get audioSrc() { return voiceAudio ? voiceAudio.src : ""; }, get speaking() { return speaking; } };
 
 // ---------- boot ----------
 function renderFallback(msg) {
@@ -1091,6 +1105,7 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   // link must not send real families into the test inbox, so preview then needs the token.
   previewMode = previewParam && (serverOpen !== true || !!previewToken);
   if (previewMode && gate.reason !== "stale") gate = { open: true, reason: null };
+  try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
   loadDraft();
   render();
 })();
