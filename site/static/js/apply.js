@@ -63,12 +63,14 @@ const SENT_KEY = "tcc-sent";          // this session's sent application, so it 
 const SENT_TTL_MS = 2 * 3600 * 1000;
 const CODES_KEY = "tcc-codes";        // confirmation codes sent from this phone this season (codes only, no answers)
 function loadCodes() {
-  try { const d = JSON.parse(localStorage.getItem(CODES_KEY)); if (Array.isArray(d)) return d.filter((c) => c && c.id && c.season === (config && config.season)); } catch (e) {}
+  // Codes from this season, plus test codes while the page is in preview mode.
+  try { const d = JSON.parse(localStorage.getItem(CODES_KEY)); if (Array.isArray(d)) return d.filter((c) => c && c.id && (c.season === (config && config.season) || (previewMode && c.season === "preview"))); } catch (e) {}
   return [];
 }
-function rememberCode(id) {
+function rememberCode(id, seasonId, sentAt) {
   try {
-    const list = [{ id, season: config.season, sent_at: new Date().toISOString() }, ...loadCodes().filter((c) => c.id !== id)].slice(0, 3);
+    const all = (() => { try { const d = JSON.parse(localStorage.getItem(CODES_KEY)); return Array.isArray(d) ? d : []; } catch (e) { return []; } })();
+    const list = [{ id, season: seasonId || (previewMode ? "preview" : config.season), sent_at: sentAt || new Date().toISOString() }, ...all.filter((c) => c && c.id !== id)].slice(0, 5);
     localStorage.setItem(CODES_KEY, JSON.stringify(list));
   } catch (e) {}
 }
@@ -592,7 +594,7 @@ root.addEventListener("submit", async (ev) => {
     check.code = code; check.error = ""; check.result = null;
     if (!/^TCC-[A-Z0-9]{2}-[A-Z0-9]{5}$/.test(code)) { check.error = t("check_not_found"); scrollTop = false; render(); return; }
     check.busy = true; scrollTop = false; render();
-    try { const st = await fetchStatus(code); if (!st) check.error = t("check_not_found"); else check.result = st; }
+    try { const st = await fetchStatus(code); if (!st) check.error = t("check_not_found"); else { check.result = st; rememberCode(st.id, st.season, st.created_at); } }
     catch (e) { check.error = t("send_error"); }
     check.busy = false; scrollTop = false; render();
     return;
