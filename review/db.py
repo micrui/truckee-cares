@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS applications (
   norm TEXT NOT NULL,                  -- normalized keys used for matching (JSON)
   server_status TEXT,                  -- last status pushed to the worker
   updated_at TEXT,
-  supersedes TEXT                      -- id of the earlier application this one replaces (an edit)
+  supersedes TEXT,                     -- id of the earlier application this one replaces (an edit)
+  note TEXT NOT NULL DEFAULT '',       -- short public note for the applicant, shown on the status page (no applicant data)
+  server_note TEXT                     -- last note pushed to the worker
 );
 CREATE INDEX IF NOT EXISTS applications_season ON applications(season, submitted_at);
 CREATE TABLE IF NOT EXISTS candidates (
@@ -78,6 +80,9 @@ def connect(path=DB_PATH):
     cols = {r[1] for r in con.execute("PRAGMA table_info(applications)")}
     if "supersedes" not in cols:
         con.execute("ALTER TABLE applications ADD COLUMN supersedes TEXT")
+    if "note" not in cols:
+        con.execute("ALTER TABLE applications ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+        con.execute("ALTER TABLE applications ADD COLUMN server_note TEXT")
     con.execute("PRAGMA foreign_keys=ON")
     return con
 

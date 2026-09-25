@@ -101,6 +101,18 @@ member's Mac, never on a server or in a web page. To give a second person the co
    separate; decisions are shared through the Worker's status field, so agree on who
    decides what.
 
+## Application status for families
+
+A family can check their application on the form's welcome screen ("Check my
+application") with the code from their confirmation screen. They see only a status word
+and the board's short note: received, we need something from you, approved, not this
+year, duplicate, out of area, or replaced. Decisions made in the console reach the status
+page after `bin/review push`. To ask a family for something, choose `needs_info` and type
+a one-line note in their language with no personal details; the status page shows it with
+Text and Call buttons. A family who wants to change something fills the form out again
+from that page; the new application replaces the old one and inherits its family and
+decision in the console.
+
 ## Each season
 
 0. Keys. Either `node bin/keygen.mjs season-YYYY` on each board Mac and push the new

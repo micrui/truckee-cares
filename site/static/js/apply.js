@@ -22,6 +22,29 @@ function screens() {
 let cur = "welcome";
 let editReturn = null;   // set when Edit is tapped on the review screen
 let supersedes = "";     // code of the application this send replaces (an edit)
+let check = { open: false, code: "", busy: false, result: null, error: "" };   // "Check my application"
+let sentStatus = null;   // live status of this session's send, for the welcome card
+async function fetchStatus(code) {
+  const r = await fetch(`${config.api_base}/api/status/${encodeURIComponent(code)}`, { cache: "no-store", headers: apiHeaders() });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+function statusCard(st) {
+  const key = ["fetched", "needs_info", "accepted", "declined", "duplicate", "out_of_area", "superseded"].includes(st.status) ? st.status : "fetched";
+  const when = st.created_at ? new Date(st.created_at).toLocaleDateString(lang === "es" ? "es-MX" : "en-US", { month: "long", day: "numeric" }) : "";
+  const head = key === "superseded" ? t("st_superseded", st.superseded_by || "") : t("st_" + key);
+  const mode = st.mode && st.mode !== "pickup" ? st.mode : "";
+  const textKey = key === "accepted" && mode ? `st_accepted_text_${mode}` : `st_${key}_text`;
+  const canChange = ["fetched", "needs_info"].includes(key);
+  return `<div class="card status-card"><p class="muted">${esc(st.id)} · ${esc(t("check_sent_on", when))}</p>
+    <p class="q-title" style="margin:6px 0">${esc(head)}</p>
+    ${st.note ? `<p class="why">${esc(st.note)}</p>` : ""}
+    <p>${esc(t(textKey))}</p>
+    ${key === "needs_info" ? `<p class="help-links"><a class="btn btn-primary" href="sms:${config.help_phone}">💬 ${t("help_text_msg")}</a><a class="btn btn-primary" href="tel:${config.help_phone}">📞 ${t("help_call")}</a></p>` : ""}
+    ${canChange ? `<p class="muted" style="margin-top:12px">${t("st_change")}</p><button type="button" class="btn btn-ghost" data-action="redo" data-code="${esc(st.id)}">✏️ ${t("st_change_btn")}</button>` : ""}
+  </div>`;
+}
 let lastSupersedes = ""; // shown on the done screen after an edit
 function loadSent() {
   try {
@@ -194,9 +217,14 @@ function renderStep() {
     const sent = loadSent();
     return `<div class="step welcome"><h1>${t("welcome_title")}</h1><p class="lead-short">${t("welcome_short")}</p>
       ${sent ? `<div class="card"><p><strong>${esc(t("sent_note", sent.id))}</strong></p>
+        ${sentStatus && sentStatus.id === sent.id ? statusCard(sentStatus) : ""}
         <button class="btn btn-primary btn-big" data-action="edit-sent">✏️ ${t("sent_edit")}</button>
         <button class="btn btn-ghost btn-big" data-action="new-family" style="margin-top:10px">👨‍👩‍👧 ${t("sent_new")}</button></div>`
       : `<button class="btn btn-secondary btn-big btn-hero" data-action="next">${t("start")}</button>`}
+      ${check.open ? `<div class="card"><h2 class="q-title" style="font-size:1.25rem">${t("check_title")}</h2><p class="hint">${t("check_hint")}</p>
+        <form data-action="check-form" class="assist-form"><input id="check-code" type="text" value="${esc(check.code)}" placeholder="TCC-26-ABCDE" autocapitalize="characters" autocomplete="off" spellcheck="false" maxlength="14" ${check.busy ? "disabled" : ""}><button class="btn btn-primary" ${check.busy ? "disabled" : ""}>${t("check_go")}</button></form>
+        ${check.error ? `<p class="error">${esc(check.error)}</p>` : ""}
+        ${check.result ? statusCard(check.result) : ""}</div>` : `<button type="button" class="btn btn-ghost btn-big" data-action="check-open" style="margin-top:12px">🔎 ${t("check_btn")}</button>`}
       <button type="button" class="btn btn-ghost btn-big" data-action="help-open" style="margin-top:12px">🆘 ${t("help_sheet_title")}</button>
       ${demoMode && voiceEnabled() ? `<div class="card" style="text-align:center"><button type="button" class="btn btn-secondary btn-big" data-action="voice-start" style="min-height:72px;font-size:1.25rem">🎤 ${t("voice_enter")}</button><p class="muted" style="margin:8px 0 0">${t("voice_enter_hint")}</p></div>` : ""}
       ${demoMode && assistEnabled() ? `<div class="card"><h2>🎤 ${t("freeform_title")}</h2><p>${t("freeform_text")}</p>
@@ -464,7 +492,7 @@ async function speakText(text) {
 root.addEventListener("click", async (ev) => {
   const el = ev.target.closest("[data-action]"); if (!el) return;
   const a = el.dataset.action;
-  if (a === "assist-ask") return; // the form's submit handler owns this; re-rendering here would drop the question
+  if (a === "assist-ask" || a === "check-form") return; // the submit handler owns these; re-rendering here would drop the input
   if (el.tagName === "A") ev.preventDefault();
   if (a === "speak") { speakPage(); return; }
   if (a === "speak-text") { speakText(assist.history[+el.dataset.i]?.content || ""); return; }
@@ -527,11 +555,25 @@ root.addEventListener("click", async (ev) => {
     if (sent) { state = { ...blankState(), ...sent.state, consent_all: false }; supersedes = sent.id; previewMode = !!sent.preview || previewMode; cur = "review"; }
   }
   if (a === "new-family") { clearSent(); state = blankState(); supersedes = ""; cur = "helper"; }
+  if (a === "check-open") { check = { open: true, code: "", busy: false, result: null, error: "" }; scrollTop = false; render(); root.querySelector("#check-code")?.focus(); return; }
+  if (a === "redo") { clearSent(); state = blankState(); supersedes = String(el.dataset.code || "").toUpperCase(); check = { open: false, code: "", busy: false, result: null, error: "" }; cur = "helper"; }
   if (a === "again") { clearSent(); state = blankState(); cur = "welcome"; view = "form"; doneId = ""; prefilled = true; editReturn = null; supersedes = ""; lastSupersedes = ""; }
   if (a === "submit") { errors = validate("review"); if (Object.keys(errors).length) return render(); await submit(); return; }
   errors = {}; saveDraft(); render();
 });
 root.addEventListener("submit", async (ev) => {
+  const cf = ev.target.closest('[data-action="check-form"]');
+  if (cf) {
+    ev.preventDefault();
+    const code = (root.querySelector("#check-code")?.value || "").trim().toUpperCase().replace(/\s+/g, "");
+    check.code = code; check.error = ""; check.result = null;
+    if (!/^TCC-[A-Z0-9]{2}-[A-Z0-9]{5}$/.test(code)) { check.error = t("check_not_found"); scrollTop = false; render(); return; }
+    check.busy = true; scrollTop = false; render();
+    try { const st = await fetchStatus(code); if (!st) check.error = t("check_not_found"); else check.result = st; }
+    catch (e) { check.error = t("send_error"); }
+    check.busy = false; scrollTop = false; render();
+    return;
+  }
   const f = ev.target.closest('[data-action="assist-ask"]'); if (!f) return;
   ev.preventDefault();
   const q = root.querySelector("#assist-q").value.trim(); if (!q || assist.busy) return;
@@ -825,7 +867,7 @@ async function submit() {
     }
     const data = await res.json();
     doneId = data.id;
-    lastSupersedes = supersedes; supersedes = "";
+    lastSupersedes = supersedes; supersedes = ""; sentStatus = null;
     try { const { consent_all, ...keep } = state; sessionStorage.setItem(SENT_KEY, JSON.stringify({ id: doneId, sent_at: new Date().toISOString(), preview: previewMode, state: keep })); } catch (e) {}
     try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
     try { sessionStorage.removeItem(DRAFT_KEY); } catch (e) {}
@@ -1131,4 +1173,6 @@ const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeo
   try { localStorage.removeItem(REMEMBER_KEY); } catch (e) {}
   loadDraft();
   render();
+  const sent = loadSent();
+  if (sent && cur === "welcome") { try { sentStatus = await withTimeout(fetchStatus(sent.id), 8000); if (cur === "welcome") { scrollTop = false; render(); } } catch (e) {} }
 })();

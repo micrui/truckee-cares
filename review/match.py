@@ -252,7 +252,9 @@ def recompute_family(con, fid):
 
 
 def set_decision(con, app_id, status, note=""):
-    con.execute("UPDATE applications SET status=?, updated_at=? WHERE id=?", (status, now(), app_id))
+    """Record a decision. `note` is the short public line the applicant sees on the status
+    page (for needs_info: what we need from them). Keep it free of applicant details."""
+    con.execute("UPDATE applications SET status=?, updated_at=?, note=? WHERE id=?", (status, now(), (note or "").strip()[:200], app_id))
     r = con.execute("SELECT family_id FROM applications WHERE id=?", (app_id,)).fetchone()
     if r and r["family_id"]:
         recompute_family(con, r["family_id"])

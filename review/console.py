@@ -23,7 +23,7 @@ from .sync import error_task_id
 
 E = lambda v: html.escape("" if v is None else str(v))  # noqa: E731
 PROGRAMS = ("food", "toys", "coats")
-STATUSES = ("new", "matched", "accepted", "hold", "declined", "duplicate", "out_of_area")
+STATUSES = ("new", "matched", "accepted", "hold", "needs_info", "declined", "duplicate", "out_of_area")
 CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
 CSS = (ROOT / "site" / "static" / "css" / "site.css").read_text()
 EXTRA = """
@@ -117,7 +117,8 @@ def app_card_body(a, con):
 <dt>Family</dt><dd>{('<a href="/families/' + E(fam['id']) + '">' + E(fam['display_name']) + '</a> · seasons served: ' + E(fam['seasons_served']) + ' · trust ' + E(fam['trust'])) if fam else '<span class="muted">not linked</span>'}</dd>
 </dl>
 <form method="post" action="/apps/{E(a['id'])}/decide" class="inline">
-{''.join(f'<button class="btn btn-ghost small" name="status" value="{s}">{s}</button> ' for s in ['accepted', 'hold', 'declined', 'duplicate', 'out_of_area'])}
+{''.join(f'<button class="btn btn-ghost small" name="status" value="{s}">{s}</button> ' for s in ['accepted', 'hold', 'needs_info', 'declined', 'duplicate', 'out_of_area'])}
+<div style="margin-top:6px"><input name="note" value="{E(a.get('note') or '')}" maxlength="200" placeholder="note the family sees on the status page, in their language ({E((p.get('applicant') or {}).get('contact_lang') or a.get('lang') or 'es')}); no personal details" style="width:100%;min-height:36px;font:inherit;padding:4px 8px"></div>
 </form></div>"""
 
 
@@ -411,7 +412,7 @@ def make_handler(con, port):
             if p.startswith("/apps/") and p.endswith("/decide"):
                 status = g("status")
                 if status in STATUSES:
-                    set_decision(con, p.split("/")[2], status)
+                    set_decision(con, p.split("/")[2], status, g("note"))
                 ref = self.headers.get("referer") or ""
                 return self.redirect(ref if any(ref.startswith(o + "/") for o in origins) else "/apps")
             if p.startswith("/candidates/") and p.endswith("/resolve"):

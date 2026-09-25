@@ -196,3 +196,6 @@ body.rec-open { overflow: hidden; }
 .step .q-title { margin-top: 14px; }
 .step .why { margin: 14px 0 0; }
 .nav-row { margin-top: 28px; }
+
+.status-card { text-align: left; }
+.status-card .help-links { margin: 8px 0 0; }

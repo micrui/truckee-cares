@@ -24,7 +24,8 @@ const MAX_CIPHERTEXT = 16 * 1024;
 const PAGE = 500;
 const DAY = 24 * 60 * 60 * 1000;
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L
-const STATUSES = new Set(["new", "fetched", "accepted", "declined", "duplicate", "out_of_area", "superseded"]);
+const STATUSES = new Set(["new", "fetched", "needs_info", "accepted", "declined", "duplicate", "out_of_area", "superseded"]);
+const MAX_NOTE = 200;   // a short public note from the board, never applicant data
 const ID_RE = /^TCC-[A-Z0-9]{2}-[A-Z0-9]{5}$/;
 const ARMOR_BEGIN = "-----BEGIN AGE ENCRYPTED FILE-----";
 const ARMOR_END = "-----END AGE ENCRYPTED FILE-----";
@@ -228,6 +229,24 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
     return new Response(r.body, { status: r.status, headers: h });
   }
 
+  // Applicant-facing status: the confirmation code is the key. Only the status word,
+  // the board's short public note, and dates come back; never the application.
+  let sm = path.match(/^\/api\/status\/([A-Z0-9-]+)$/);
+  if (req.method === "GET" && sm) {
+    const hit = await limited(env, "status:" + clientKey(req), cors);
+    if (hit) return hit;
+    if (!ID_RE.test(sm[1])) return json({ error: "not_found" }, 404, cors);
+    const row = await env.DB.prepare("SELECT id, season, status, note, created_at, updated_at, supersedes FROM submissions WHERE id = ?1").bind(sm[1]).first();
+    if (!row) return json({ error: "not_found" }, 404, cors);
+    let superseded_by = null;
+    if (row.status === "superseded") {
+      const nxt = await env.DB.prepare("SELECT id FROM submissions WHERE supersedes = ?1").bind(row.id).first();
+      superseded_by = nxt ? nxt.id : null;
+    }
+    const status = row.status === "new" ? "fetched" : row.status;   // "new" and "fetched" both mean received
+    return json({ id: row.id, season: row.season, status, note: row.note || "", created_at: row.created_at, updated_at: row.updated_at, superseded_by, mode: season.mode }, 200, cors);
+  }
+
   if (path.startsWith("/api/admin/")) {
     if (!isAdmin(req, env)) {
       // Failed guesses count against the caller so the token cannot be brute-forced.
@@ -258,8 +277,9 @@ export async function handle(req, env, now = Date.now(), cors = corsHeaders(req,
       let body; try { body = await req.json(); } catch { return json({ error: "bad_json" }, 400, cors); }
       body = body && typeof body === "object" ? body : {};
       if (!STATUSES.has(body.status)) return json({ error: "bad_status" }, 400, cors);
-      const r = await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2 WHERE id = ?3")
-        .bind(body.status, new Date().toISOString(), m[1]).run();
+      const note = typeof body.note === "string" ? body.note.trim().slice(0, MAX_NOTE) : "";
+      const r = await env.DB.prepare("UPDATE submissions SET status = ?1, updated_at = ?2, note = ?4 WHERE id = ?3")
+        .bind(body.status, new Date().toISOString(), m[1], note).run();
       return json({ ok: true, changed: r.meta?.changes ?? null }, 200, cors);
     }
     if (req.method === "DELETE" && m) {

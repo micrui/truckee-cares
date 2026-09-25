@@ -349,18 +349,19 @@ def delete_failed(con, season):
 
 # --- statuses back to the server ---------------------------------------------------------
 
-SERVER_STATUS = {"accepted": "accepted", "declined": "declined", "duplicate": "duplicate", "out_of_area": "out_of_area", "matched": "fetched", "new": "fetched", "hold": "fetched", "superseded": "superseded"}
+SERVER_STATUS = {"accepted": "accepted", "declined": "declined", "duplicate": "duplicate", "out_of_area": "out_of_area", "matched": "fetched", "new": "fetched", "hold": "fetched", "needs_info": "needs_info", "superseded": "superseded"}
 
 
 def push_statuses(db=None):
     con = db or connect()
-    rows = con.execute("SELECT id, status, server_status FROM applications WHERE source='web'").fetchall()
+    rows = con.execute("SELECT id, status, server_status, note, server_note FROM applications WHERE source='web'").fetchall()
     n = 0
     for r in rows:
         want = SERVER_STATUS.get(r["status"], "fetched")
-        if want != (r["server_status"] or ""):
-            api("PATCH", f"/api/admin/submissions/{r['id']}", {"status": want})
-            con.execute("UPDATE applications SET server_status=? WHERE id=?", (want, r["id"]))
+        note = (r["note"] or "").strip()[:200]
+        if want != (r["server_status"] or "") or note != (r["server_note"] or ""):
+            api("PATCH", f"/api/admin/submissions/{r['id']}", {"status": want, "note": note})
+            con.execute("UPDATE applications SET server_status=?, server_note=? WHERE id=?", (want, note, r["id"]))
             n += 1
     con.commit()
     return n

@@ -15,10 +15,10 @@ function fakeDB() {
         async run() {
           if (sql.startsWith("INSERT")) {
             if (rows.has(args[0])) throw new Error("UNIQUE constraint failed");
-            rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null, supersedes: args[5] ?? null });
+            rows.set(args[0], { id: args[0], season: args[1], lang: args[2], created_at: args[3], ciphertext: args[4], status: "new", updated_at: null, supersedes: args[5] ?? null, note: "" });
             return { meta: { changes: 1 } };
           }
-          if (sql.startsWith("UPDATE")) { const r = rows.get(args[2]); if (r) { r.status = args[0]; r.updated_at = args[1]; } return { meta: { changes: r ? 1 : 0 } }; }
+          if (sql.startsWith("UPDATE")) { const r = rows.get(args[2]); if (r) { r.status = args[0]; r.updated_at = args[1]; if (args.length > 3) r.note = args[3]; } return { meta: { changes: r ? 1 : 0 } }; }
           if (sql.startsWith("DELETE") && /WHERE id =/.test(sql)) return { meta: { changes: rows.delete(args[0]) ? 1 : 0 } };
           if (sql.startsWith("DELETE")) { let n = 0; for (const [k, v] of rows) if (v.season === args[0]) { rows.delete(k); n++; } return { meta: { changes: n } }; }
         },
@@ -32,6 +32,7 @@ function fakeDB() {
           return { results };
         },
         async first() {
+          if (/WHERE supersedes = \?1/.test(sql)) return [...rows.values()].find((r) => r.supersedes === args[0]) ?? null;
           if (/WHERE id = \?1/.test(sql)) return rows.get(args[0]) ?? null;
           throw new Error("fake D1: unexpected first() for " + sql);
         },
@@ -414,4 +415,25 @@ test("an edit supersedes the earlier submission from the same season", async () 
   assert.equal((await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: first.id } }), e, inSeason)).status, 400);
   assert.equal((await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: "TCC-26-NOPE1" } }), e, inSeason)).status, 400);
   assert.equal((await handle(req("POST", "/api/apply", { body: { season: "preview", lang: "es", ciphertext: CT, supersedes: id } }), e, Date.parse("2026-09-25T12:00:00-07:00"))).status, 400);
+});
+
+test("public status lookup by code returns the status word and note only", async () => {
+  const e = env();
+  const inSeason = Date.parse("2026-10-20T12:00:00-07:00");
+  const { id } = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT } }), e, inSeason)).json();
+  const r1 = await (await handle(req("GET", `/api/status/${id}`), e)).json();
+  assert.equal(r1.status, "fetched");
+  assert.equal(r1.note, "");
+  assert.equal("ciphertext" in r1, false);
+  const auth = { authorization: "Bearer secret-token" };
+  await handle(req("PATCH", `/api/admin/submissions/${id}`, { headers: auth, body: { status: "needs_info", note: "Please confirm your mailing address by text." } }), e);
+  const r2 = await (await handle(req("GET", `/api/status/${id}`), e)).json();
+  assert.equal(r2.status, "needs_info");
+  assert.match(r2.note, /mailing address/);
+  assert.equal((await handle(req("GET", "/api/status/TCC-26-ZZZZZ"), e)).status, 404);
+  assert.equal((await handle(req("GET", "/api/status/../etc"), e)).status, 404);
+  const edit = await (await handle(req("POST", "/api/apply", { body: { season: "2026", lang: "es", ciphertext: CT, supersedes: id } }), e, inSeason)).json();
+  const r3 = await (await handle(req("GET", `/api/status/${id}`), e)).json();
+  assert.equal(r3.status, "superseded");
+  assert.equal(r3.superseded_by, edit.id);
 });

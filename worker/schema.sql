@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS submissions (
   ciphertext  TEXT NOT NULL,              -- age armored, encrypted to config.recipients
   status      TEXT NOT NULL DEFAULT 'new',-- new | fetched | accepted | declined | duplicate | out_of_area | superseded
   updated_at  TEXT,
-  supersedes  TEXT                        -- id of the earlier submission this one replaces (an edit)
+  supersedes  TEXT,                       -- id of the earlier submission this one replaces (an edit)
+  note        TEXT                        -- short public note from the board for the applicant (no applicant data)
 );
 CREATE INDEX IF NOT EXISTS submissions_season ON submissions (season, created_at);
--- Existing databases: ALTER TABLE submissions ADD COLUMN supersedes TEXT;
+-- Existing databases: ALTER TABLE submissions ADD COLUMN supersedes TEXT; ALTER TABLE submissions ADD COLUMN note TEXT;
